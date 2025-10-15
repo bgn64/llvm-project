@@ -16,6 +16,7 @@
 #include "llvm/ADT/StringSet.h"
 #include "llvm/DebugInfo/DWARF/DWARFContext.h"
 #include "llvm/DebugInfo/Symbolize/Symbolize.h"
+#include "llvm/Object/BuildID.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCDisassembler/MCDisassembler.h"
@@ -209,6 +210,8 @@ class ProfiledBinary {
   StringRef SymbolizerPath;
   // Options used to configure the symbolizer
   symbolize::LLVMSymbolizer::Options SymbolizerOpts;
+  // The build ID of the binary.
+  object::BuildID BinaryBuildID;
   // The runtime base address that the first executable segment is loaded at.
   uint64_t BaseAddress = 0;
   // The runtime base address that the first loadabe segment is loaded at.
@@ -419,6 +422,28 @@ public:
 
   StringRef getPath() const { return Path; }
   StringRef getName() const { return llvm::sys::path::filename(Path); }
+  const object::BuildIDRef getBuildID() const { return BinaryBuildID; }
+  
+  /// For COFF files, extract the GUID from the debug ID (first 16 bytes)
+  std::optional<std::array<uint8_t, 16>> getCOFFDebugGUID() const {
+    if (!IsCOFF || BinaryBuildID.size() < 16)
+      return std::nullopt;
+    std::array<uint8_t, 16> GUID;
+    std::copy(BinaryBuildID.begin(), BinaryBuildID.begin() + 16, GUID.begin());
+    return GUID;
+  }
+  
+  /// For COFF files, extract the Age from the debug ID (last 4 bytes)
+  std::optional<uint32_t> getCOFFDebugAge() const {
+    if (!IsCOFF || BinaryBuildID.size() < 20)
+      return std::nullopt;
+    // Age is stored as little-endian 32-bit integer at the end
+    const uint8_t *AgeBytes = BinaryBuildID.data() + 16;
+    return static_cast<uint32_t>(AgeBytes[0]) |
+           (static_cast<uint32_t>(AgeBytes[1]) << 8) |
+           (static_cast<uint32_t>(AgeBytes[2]) << 16) |
+           (static_cast<uint32_t>(AgeBytes[3]) << 24);
+  }
   uint64_t getBaseAddress() const { return BaseAddress; }
   void setBaseAddress(uint64_t Address) { BaseAddress = Address; }
 

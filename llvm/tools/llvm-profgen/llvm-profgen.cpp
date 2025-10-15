@@ -16,8 +16,10 @@
 #include "ProfileGenerator.h"
 #include "ProfiledBinary.h"
 #include "llvm/DebugInfo/Symbolize/SymbolizableModule.h"
+#include "llvm/Object/BuildID.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Format.h"
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/VirtualFileSystem.h"
@@ -52,6 +54,11 @@ static cl::opt<std::string> UnsymbolizedProfFilename(
     cl::cat(ProfGenCategory));
 static cl::alias UPA("up", cl::desc("Alias for --unsymbolized-profile"),
                      cl::aliasopt(UnsymbolizedProfFilename));
+
+static cl::opt<std::string> SPTFilename(
+    "spt", cl::value_desc("spt"),
+    cl::desc("Path of Intel Processor Trace (SPT) file"),
+    cl::cat(ProfGenCategory));
 
 static cl::opt<std::string> SampleProfFilename(
     "llvm-sample-profile", cl::value_desc("llvm sample profile"),
@@ -89,15 +96,16 @@ static void validateCommandLine() {
     bool HasUnsymbolizedProfile =
         UnsymbolizedProfFilename.getNumOccurrences() > 0;
     bool HasSampleProfile = SampleProfFilename.getNumOccurrences() > 0;
+    bool HasSPT = SPTFilename.getNumOccurrences() > 0;
     uint16_t S =
-        HasPerfData + HasPerfScript + HasUnsymbolizedProfile + HasSampleProfile;
+        HasPerfData + HasPerfScript + HasUnsymbolizedProfile + HasSampleProfile + HasSPT;
     if (S != 1) {
       std::string Msg =
           S > 1
-              ? "`--perfscript`, `--perfdata` and `--unsymbolized-profile` "
+              ? "`--perfscript`, `--perfdata`, `--unsymbolized-profile`, and `--spt` "
                 "cannot be used together."
               : "Perf input file is missing, please use one of `--perfscript`, "
-                "`--perfdata` and `--unsymbolized-profile` for the input.";
+                "`--perfdata`, `--unsymbolized-profile`, or `--spt` for the input.";
       exitWithError(Msg);
     }
 
@@ -111,6 +119,8 @@ static void validateCommandLine() {
     CheckFileExists(HasPerfData, PerfDataFilename);
     CheckFileExists(HasPerfScript, PerfScriptFilename);
     CheckFileExists(HasUnsymbolizedProfile, UnsymbolizedProfFilename);
+    CheckFileExists(HasSampleProfile, SampleProfFilename);
+    CheckFileExists(HasSPT, SPTFilename);
     CheckFileExists(HasSampleProfile, SampleProfFilename);
   }
 
@@ -139,8 +149,91 @@ static PerfInputFile getPerfInputFile() {
   } else if (UnsymbolizedProfFilename.getNumOccurrences()) {
     File.InputFile = UnsymbolizedProfFilename;
     File.Format = PerfFormat::UnsymbolizedProfile;
+  } else if (SPTFilename.getNumOccurrences()) {
+    File.InputFile = SPTFilename;
+    File.Format = PerfFormat::SPT;
   }
   return File;
+}
+
+static void serializeSampleCounters(const sampleprof::ContextSampleCounterMap &SampleCounters) {
+  std::error_code EC;
+  raw_fd_ostream OS("sample_counters_debug.txt", EC);
+  if (EC) {
+    llvm::errs() << "Error creating debug file: " << EC.message() << "\n";
+    return;
+  }
+  
+  OS << "SampleCounters Debug Output\n";
+  OS << "Total contexts: " << SampleCounters.size() << "\n\n";
+  
+  for (const auto &Entry : SampleCounters) {
+    OS << "Context: ";
+    // Simple context representation - just use a generic identifier
+    OS << "ctx_" << reinterpret_cast<uintptr_t>(Entry.first.getPtr()) << "\n";
+    
+    const auto &Counter = Entry.second;
+    
+    // Serialize RangeCounter
+    OS << "RangeCounter entries: " << Counter.RangeCounter.size() << "\n";
+    for (const auto &Range : Counter.RangeCounter) {
+      OS << "  " << format("0x%llx", Range.first.first) << "-" 
+         << format("0x%llx", Range.first.second) << ":" << Range.second << "\n";
+    }
+    
+    // Serialize BranchCounter
+    OS << "BranchCounter entries: " << Counter.BranchCounter.size() << "\n";
+    for (const auto &Branch : Counter.BranchCounter) {
+      OS << "  " << format("0x%llx", Branch.first.first) << "->" 
+         << format("0x%llx", Branch.first.second) << ":" << Branch.second << "\n";
+    }
+    
+    // Serialize DataAccessCounter
+    OS << "DataAccessCounter entries: " << Counter.DataAccessCounter.size() << "\n";
+    for (const auto &DataAccess : Counter.DataAccessCounter) {
+      OS << "  " << format("0x%llx", DataAccess.first.first) << ":" 
+         << DataAccess.first.second << ":" << DataAccess.second << "\n";
+    }
+    
+    OS << "\n";
+  }
+  
+  OS.close();
+  llvm::outs() << "Sample counters serialized to sample_counters_debug.txt\n";
+}
+
+static void printBinaryIdentifier(const std::unique_ptr<ProfiledBinary> &Binary) {
+  llvm::outs() << "Binary: " << Binary->getName() << " (" 
+               << (Binary->isCOFF() ? "COFF" : "ELF") << ")\n";
+  
+  if (Binary->isCOFF()) {
+    // For Windows .exe files, print GUID and Age
+    auto GUID = Binary->getCOFFDebugGUID();
+    auto Age = Binary->getCOFFDebugAge();
+    
+    if (GUID && Age) {
+      llvm::outs() << "Debug GUID: ";
+      for (uint8_t Byte : *GUID) {
+        llvm::outs() << format("%02x", Byte);
+      }
+      llvm::outs() << "\n";
+      llvm::outs() << "Debug Age: " << *Age << "\n";
+    } else {
+      llvm::outs() << "Debug ID: <not available - no CodeView debug info found>\n";
+    }
+  } else {
+    // For ELF files, print build ID
+    object::BuildIDRef BuildID = Binary->getBuildID();
+    if (!BuildID.empty()) {
+      llvm::outs() << "Build ID: ";
+      for (uint8_t Byte : BuildID) {
+        llvm::outs() << format("%02x", Byte);
+      }
+      llvm::outs() << "\n";
+    } else {
+      llvm::outs() << "Build ID: <not available - no GNU build ID found>\n";
+    }
+  }
 }
 
 } // end namespace llvm
@@ -160,6 +253,10 @@ int main(int argc, const char *argv[]) {
   // Load symbols and disassemble the code of a given binary.
   std::unique_ptr<ProfiledBinary> Binary =
       std::make_unique<ProfiledBinary>(BinaryPath, DebugBinPath);
+  
+  // Print binary identifier information
+  printBinaryIdentifier(Binary);
+  
   if (ShowDisassemblyOnly)
     return EXIT_SUCCESS;
 
@@ -185,6 +282,9 @@ int main(int argc, const char *argv[]) {
         PerfReaderBase::create(Binary.get(), PerfFile, PIDFilter);
     // Parse perf events and samples
     Reader->parsePerfTraces();
+
+    // Debug: serialize sample counters for comparison
+    serializeSampleCounters(Reader->getSampleCounters());
 
     if (!DataAccessProfileFilename.empty()) {
       if (Reader->profileIsCS() || Binary->usePseudoProbes()) {

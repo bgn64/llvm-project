@@ -239,6 +239,16 @@ void ProfiledBinary::load() {
 
   LLVM_DEBUG(dbgs() << "Loading " << Path << "\n");
 
+  // Extract build ID from the binary
+  if (IsCOFF) {
+    // For COFF files, extract GUID + Age from debug directory
+    BinaryBuildID = object::getCOFFDebugID(Obj);
+  } else {
+    // For ELF files, extract GNU build ID
+    object::BuildIDRef BuildIDRef = object::getBuildID(Obj);
+    BinaryBuildID = object::BuildID(BuildIDRef.begin(), BuildIDRef.end());
+  }
+
   // Mark the binary as a kernel image;
   IsKernel = KernelBinary;
 
