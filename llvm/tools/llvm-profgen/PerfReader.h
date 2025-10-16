@@ -749,6 +749,18 @@ private:
   std::unordered_set<std::string> ContextStrSet;
 };
 
+// SPT file format structures
+#pragma pack(push, 1)
+struct SPTRVA {
+  uint32_t rva;
+};
+
+struct SPTLBREntry {
+  SPTRVA targetRva;
+  SPTRVA sourceRva;
+};
+#pragma pack(pop)
+
 /*
   SPT (Intel Processor Trace) reader for parsing Intel PT trace files.
   This reader handles Intel Processor Trace data to generate sample profiles.
@@ -763,7 +775,8 @@ public:
 
 private:
   // Helper methods for SPT processing
-  void computeCounterFromLBR(const PerfSample *Sample, uint64_t Repeat);
+  void computeCounterFromLBR(const llvm::sampleprof::SPTLBREntry *LBREntries, uint8_t NumEvents);
+  void computeCounterFromRVA(const llvm::sampleprof::SPTRVA *RVAs, uint8_t NumEvents);
   void writeUnsymbolizedProfile(StringRef Filename);
   void writeUnsymbolizedProfile(raw_fd_ostream &OS);
 };

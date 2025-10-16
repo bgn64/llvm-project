@@ -1403,15 +1403,6 @@ struct SPTProgramID {
 struct SPTCommonEvent {
   uint8_t numEvents;
 };
-
-struct SPTRVA {
-  uint32_t rva;
-};
-
-struct SPTLBREntry {
-  SPTRVA targetRva;
-  SPTRVA sourceRva;
-};
 #pragma pack(pop)
 
 enum class SPTOpcode : uint8_t {
@@ -1435,29 +1426,67 @@ struct SPTBinaryID {
 };
 }
 
-void SPTPerfReader::computeCounterFromLBR(const PerfSample *Sample,
-                                          uint64_t Repeat) {
+void SPTPerfReader::computeCounterFromLBR(const llvm::sampleprof::SPTLBREntry *LBREntries, uint8_t NumEvents) {
   SampleCounter &Counter = SampleCounters.begin()->second;
   uint64_t EndAddress = 0;
-  for (const LBREntry &LBR : Sample->LBRStack) {
-    uint64_t SourceAddress = LBR.Source;
-    uint64_t TargetAddress = LBR.Target;
+  
+  for (uint8_t i = 0; i < NumEvents; i++) {
+    uint64_t Source = LBREntries[i].sourceRva.rva;
+    uint64_t Target = LBREntries[i].targetRva.rva;
+    
+    // Convert RVA to virtual address by adding base address
+    Source += Binary->getBaseAddress();
+    Target += Binary->getBaseAddress();
+    
+    // Canonicalize to use preferred load address as base address.
+    Source = Binary->canonicalizeVirtualAddress(Source);
+    Target = Binary->canonicalizeVirtualAddress(Target);
+    bool SrcIsInternal = Binary->addressIsCode(Source);
+    bool DstIsInternal = Binary->addressIsCode(Target);
+    if (!SrcIsInternal)
+      Source = ExternalAddr;
+    if (!DstIsInternal)
+      Target = ExternalAddr;
+    // Filter external-to-external case to reduce LBR trace size.
+    if (!SrcIsInternal && !DstIsInternal)
+      continue;
 
-    // Record the branch if its SourceAddress is external. It can be the case an
+    // Record the branch if its TargetAddress is internal. It can be the case an
     // external source call an internal function, later this branch will be used
     // to generate the function's head sample.
-    if (Binary->addressIsCode(TargetAddress)) {
-      Counter.recordBranchCount(SourceAddress, TargetAddress, Repeat);
+    if (Binary->addressIsCode(Target)) {
+      Counter.recordBranchCount(Source, Target, 1);
     }
 
     // If this not the first LBR, update the range count between TO of current
     // LBR and FROM of next LBR.
-    uint64_t StartAddress = TargetAddress;
+    uint64_t StartAddress = Target;
     if (Binary->addressIsCode(StartAddress) &&
         Binary->addressIsCode(EndAddress) &&
         isValidFallThroughRange(StartAddress, EndAddress, Binary))
-      Counter.recordRangeCount(StartAddress, EndAddress, Repeat);
-    EndAddress = SourceAddress;
+      Counter.recordRangeCount(StartAddress, EndAddress, 1);
+    EndAddress = Source;
+  }
+}
+
+void SPTPerfReader::computeCounterFromRVA(const llvm::sampleprof::SPTRVA *RVAs, uint8_t NumEvents) {
+  SampleCounter &Counter = SampleCounters.begin()->second;
+  
+  for (uint8_t i = 0; i < NumEvents; i++) {
+    uint64_t RVA = RVAs[i].rva;
+    
+    // Convert RVA to virtual address by adding base address
+    uint64_t VirtualAddr = RVA + Binary->getBaseAddress();
+    
+    // Canonicalize to use preferred load address as base address
+    VirtualAddr = Binary->canonicalizeVirtualAddress(VirtualAddr);
+    
+    // Only process internal addresses
+    if (Binary->addressIsCode(VirtualAddr)) {
+      // Record a single-instruction range: the instruction at this address
+      // We use the same address for both start and end to represent a single instruction
+      Counter.recordRangeCount(VirtualAddr, VirtualAddr, 1);
+    }
   }
 }
 
@@ -1584,7 +1613,13 @@ void SPTPerfReader::parsePerfTraces() {
   
   // Parse events
   size_t Offset = EventOffset;
-  AggregatedCounter AggregatedSamples;
+  
+  // Initialize empty context for LBR-only samples
+  assert(SampleCounters.empty() &&
+         "Sample counter map should be empty before raw profile generation");
+  std::shared_ptr<StringBasedCtxKey> Key =
+      std::make_shared<StringBasedCtxKey>();
+  SampleCounters.emplace(Hashable<ContextKey>(Key), SampleCounter());
   
   while (Offset < Size) {
     if (Offset + 1 > Size) break;
@@ -1604,47 +1639,19 @@ void SPTPerfReader::parsePerfTraces() {
         
         uint8_t NumEvents = CommonEvent->numEvents;
         
-        size_t LBRDataSize = NumEvents * sizeof(SPTLBREntry);
+        size_t LBRDataSize = NumEvents * sizeof(llvm::sampleprof::SPTLBREntry);
         
         if (Offset + LBRDataSize > Size) {
           exitWithError("Truncated SPT LBR data");
         }
         
-        const SPTLBREntry *LBREntries = 
-            reinterpret_cast<const SPTLBREntry *>(Data + Offset);
+        const llvm::sampleprof::SPTLBREntry *LBREntries = 
+            reinterpret_cast<const llvm::sampleprof::SPTLBREntry *>(Data + Offset);
         Offset += LBRDataSize;
         
-        // Create PerfSample from LBR data
-        std::shared_ptr<PerfSample> Sample = std::make_shared<PerfSample>();
-        for (uint8_t i = 0; i < NumEvents; i++) {
-          uint64_t Source = LBREntries[i].sourceRva.rva;
-          uint64_t Target = LBREntries[i].targetRva.rva;
-          
-          // Convert RVA to virtual address by adding base address
-          Source += Binary->getBaseAddress();
-          Target += Binary->getBaseAddress();
-          
-          // Canonicalize to use preferred load address as base address.
-          Source = Binary->canonicalizeVirtualAddress(Source);
-          Target = Binary->canonicalizeVirtualAddress(Target);
-          bool SrcIsInternal = Binary->addressIsCode(Source);
-          bool DstIsInternal = Binary->addressIsCode(Target);
-          if (!SrcIsInternal)
-            Source = ExternalAddr;
-          if (!DstIsInternal)
-            Target = ExternalAddr;
-          // Filter external-to-external case to reduce LBR trace size.
-          if (!SrcIsInternal && !DstIsInternal)
-            continue;
-          
-          Sample->LBRStack.emplace_back(Source, Target);
-        }
-        
-        // Record sample (with count of 1)
-        if (!Sample->LBRStack.empty()) {
-          AggregatedSamples[Hashable<PerfSample>(Sample)] += 1;
-          NumTotalSample++;
-        }
+        // Directly compute counters from LBR data
+        computeCounterFromLBR(LBREntries, NumEvents);
+        NumTotalSample++;
         break;
       }
       
@@ -1680,14 +1687,18 @@ void SPTPerfReader::parsePerfTraces() {
         
         uint8_t NumEvents = CommonEvent->numEvents;
         
-        size_t RVADataSize = NumEvents * sizeof(SPTRVA);
+        size_t RVADataSize = NumEvents * sizeof(llvm::sampleprof::SPTRVA);
         
         if (Offset + RVADataSize > Size) {
           exitWithError("Truncated SPT RVA data");
         }
         
-        // Skip the RVA data for these events
+        const llvm::sampleprof::SPTRVA *RVAs = 
+            reinterpret_cast<const llvm::sampleprof::SPTRVA *>(Data + Offset);
         Offset += RVADataSize;
+        
+        // Directly compute counters from RVA data
+        computeCounterFromRVA(RVAs, NumEvents);
         break;
       }
       
@@ -1697,19 +1708,6 @@ void SPTPerfReader::parsePerfTraces() {
         // more sophisticated parsing
         break;
     }
-  }
-  
-  // Generate unsymbolized profile similar to LBRPerfReader
-  // Initialize empty context for LBR-only samples
-  assert(SampleCounters.empty() &&
-         "Sample counter map should be empty before raw profile generation");
-  std::shared_ptr<StringBasedCtxKey> Key =
-      std::make_shared<StringBasedCtxKey>();
-  SampleCounters.emplace(Hashable<ContextKey>(Key), SampleCounter());
-  
-  for (const auto &Item : AggregatedSamples) {
-    const PerfSample *Sample = Item.first.getPtr();
-    computeCounterFromLBR(Sample, Item.second);
   }
   
   if (SkipSymbolization)
