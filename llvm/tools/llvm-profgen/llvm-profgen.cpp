@@ -156,52 +156,6 @@ static PerfInputFile getPerfInputFile() {
   return File;
 }
 
-static void serializeSampleCounters(const sampleprof::ContextSampleCounterMap &SampleCounters) {
-  std::error_code EC;
-  raw_fd_ostream OS("sample_counters_debug.txt", EC);
-  if (EC) {
-    llvm::errs() << "Error creating debug file: " << EC.message() << "\n";
-    return;
-  }
-  
-  OS << "SampleCounters Debug Output\n";
-  OS << "Total contexts: " << SampleCounters.size() << "\n\n";
-  
-  for (const auto &Entry : SampleCounters) {
-    OS << "Context: ";
-    // Simple context representation - just use a generic identifier
-    OS << "ctx_" << reinterpret_cast<uintptr_t>(Entry.first.getPtr()) << "\n";
-    
-    const auto &Counter = Entry.second;
-    
-    // Serialize RangeCounter
-    OS << "RangeCounter entries: " << Counter.RangeCounter.size() << "\n";
-    for (const auto &Range : Counter.RangeCounter) {
-      OS << "  " << format("0x%llx", Range.first.first) << "-" 
-         << format("0x%llx", Range.first.second) << ":" << Range.second << "\n";
-    }
-    
-    // Serialize BranchCounter
-    OS << "BranchCounter entries: " << Counter.BranchCounter.size() << "\n";
-    for (const auto &Branch : Counter.BranchCounter) {
-      OS << "  " << format("0x%llx", Branch.first.first) << "->" 
-         << format("0x%llx", Branch.first.second) << ":" << Branch.second << "\n";
-    }
-    
-    // Serialize DataAccessCounter
-    OS << "DataAccessCounter entries: " << Counter.DataAccessCounter.size() << "\n";
-    for (const auto &DataAccess : Counter.DataAccessCounter) {
-      OS << "  " << format("0x%llx", DataAccess.first.first) << ":" 
-         << DataAccess.first.second << ":" << DataAccess.second << "\n";
-    }
-    
-    OS << "\n";
-  }
-  
-  OS.close();
-  llvm::outs() << "Sample counters serialized to sample_counters_debug.txt\n";
-}
-
 static void printBinaryIdentifier(const std::unique_ptr<ProfiledBinary> &Binary) {
   llvm::outs() << "Binary: " << Binary->getName() << " (" 
                << (Binary->isCOFF() ? "COFF" : "ELF") << ")\n";
@@ -282,9 +236,6 @@ int main(int argc, const char *argv[]) {
         PerfReaderBase::create(Binary.get(), PerfFile, PIDFilter);
     // Parse perf events and samples
     Reader->parsePerfTraces();
-
-    // Debug: serialize sample counters for comparison
-    serializeSampleCounters(Reader->getSampleCounters());
 
     if (!DataAccessProfileFilename.empty()) {
       if (Reader->profileIsCS() || Binary->usePseudoProbes()) {
