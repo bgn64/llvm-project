@@ -1614,6 +1614,12 @@ void SPTPerfReader::parsePerfTraces() {
   // Parse events
   size_t Offset = EventOffset;
   
+  // Initialize counters for logging
+  uint64_t LBREventCount = 0;
+  uint64_t RVAEventCount = 0;
+  uint64_t TotalLBREntries = 0;
+  uint64_t TotalRVAEntries = 0;
+  
   // Initialize empty context for LBR-only samples
   assert(SampleCounters.empty() &&
          "Sample counter map should be empty before raw profile generation");
@@ -1648,6 +1654,10 @@ void SPTPerfReader::parsePerfTraces() {
         const llvm::sampleprof::SPTLBREntry *LBREntries = 
             reinterpret_cast<const llvm::sampleprof::SPTLBREntry *>(Data + Offset);
         Offset += LBRDataSize;
+        
+        // Update LBR counters for logging
+        LBREventCount++;
+        TotalLBREntries += NumEvents;
         
         // Directly compute counters from LBR data
         computeCounterFromLBR(LBREntries, NumEvents);
@@ -1697,6 +1707,10 @@ void SPTPerfReader::parsePerfTraces() {
             reinterpret_cast<const llvm::sampleprof::SPTRVA *>(Data + Offset);
         Offset += RVADataSize;
         
+        // Update RVA counters for logging
+        RVAEventCount++;
+        TotalRVAEntries += NumEvents;
+        
         // Directly compute counters from RVA data
         computeCounterFromRVA(RVAs, NumEvents);
         break;
@@ -1708,6 +1722,21 @@ void SPTPerfReader::parsePerfTraces() {
         // more sophisticated parsing
         break;
     }
+  }
+  
+  // Log SPT data summary
+  if (LBREventCount > 0) {
+    outs() << "SPT file contains " << LBREventCount << " LBR events with " 
+           << TotalLBREntries << " total LBR entries\n";
+  } else {
+    outs() << "SPT file contains no LBR data\n";
+  }
+  
+  if (RVAEventCount > 0) {
+    outs() << "SPT file contains " << RVAEventCount << " RVA events with " 
+           << TotalRVAEntries << " total RVA entries\n";
+  } else {
+    outs() << "SPT file contains no RVA data\n";
   }
   
   if (SkipSymbolization)
