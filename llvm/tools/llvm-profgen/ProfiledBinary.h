@@ -376,6 +376,13 @@ class ProfiledBinary {
   // Load debug info from DWARF unit.
   void loadSymbolsFromDWARFUnit(DWARFUnit &CompilationUnit);
 
+  // Load debug info from PDB file using DIA SDK.
+  void loadSymbolsFromPDB(const std::string &PDBPath);
+
+  // Populate AllSymbols mapping from PDB file for disassembly.
+  void populateSymbolsFromPDB(const object::ObjectFile *Obj, 
+                              std::map<object::SectionRef, SectionSymbolsTy> &AllSymbols);
+
   // Create symbol to its start address mapping.
   void populateSymbolAddressList(const object::ObjectFile *O);
 
