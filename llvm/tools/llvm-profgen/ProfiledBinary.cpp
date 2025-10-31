@@ -1080,14 +1080,6 @@ void ProfiledBinary::loadSymbolsFromPDB(const std::string &PDBPath) {
     exitWithError("Failed to load PDB data: " + toString(std::move(Err)), PDBPath);
   }
 
-  // Set load address for the session - this is crucial for correct address calculation
-  uint64_t preferredBase = getPreferredBaseAddress();
-  if (preferredBase != 0) {
-    if (!Session->setLoadAddress(preferredBase)) {
-      WithColor::warning() << "Failed to set load address for PDB session\n";
-    }
-  }
-
   // Get global scope
   auto GlobalScope = Session->getGlobalScope();
   if (!GlobalScope) {
@@ -1116,37 +1108,38 @@ void ProfiledBinary::loadSymbolsFromPDB(const std::string &PDBPath) {
     }
 
     // Calculate actual addresses - add preferred base to RVA
-    uint64_t StartAddress = preferredBase + static_cast<uint64_t>(RVA);
+    uint64_t StartAddress = getPreferredBaseAddress() + static_cast<uint64_t>(RVA);
     uint64_t EndAddress = StartAddress + Length;
 
-    // Validate address range - be more lenient with validation
-    if (EndAddress > StartAddress && Length > 0) {
-      // Create or find the BinaryFunction
-      auto Ret = BinaryFunctions.emplace(funcName, BinaryFunction());
-      auto &Func = Ret.first->second;
-      if (Ret.second) {
-        Func.FuncName = Ret.first->first;
-      }
+    if (EndAddress <= StartAddress ||
+          StartAddress < getPreferredBaseAddress())
+        continue;
 
-      // Add the range to the function
-      Func.Ranges.emplace_back(StartAddress, EndAddress);
+    // Create or find the BinaryFunction
+    auto Ret = BinaryFunctions.emplace(funcName, BinaryFunction());
+    auto &Func = Ret.first->second;
+    if (Ret.second) {
+      Func.FuncName = Ret.first->first;
+    }
 
-      // Add to StartAddrToFuncRangeMap
-      auto R = StartAddrToFuncRangeMap.emplace(StartAddress, FuncRange());
-      if (R.second) {
-        FuncRange &FRange = R.first->second;
-        FRange.Func = &Func;
-        FRange.StartAddress = StartAddress;
-        FRange.EndAddress = EndAddress;
-        FRange.IsFuncEntry = true; // PDB functions are typically entry points
-      } else {
-        AddrsWithMultipleSymbols.insert(StartAddress);
-        if (ShowDetailedWarning) {
-          WithColor::warning()
-              << "Duplicated symbol start address at "
-              << format("%8" PRIx64, StartAddress) << " "
-              << R.first->second.getFuncName() << " and " << funcName << "\n";
-        }
+    // Add the range to the function
+    Func.Ranges.emplace_back(StartAddress, EndAddress);
+
+    // Add to StartAddrToFuncRangeMap
+    auto R = StartAddrToFuncRangeMap.emplace(StartAddress, FuncRange());
+    if (R.second) {
+      FuncRange &FRange = R.first->second;
+      FRange.Func = &Func;
+      FRange.StartAddress = StartAddress;
+      FRange.EndAddress = EndAddress;
+      FRange.IsFuncEntry = true; // PDB functions are typically entry points
+    } else {
+      AddrsWithMultipleSymbols.insert(StartAddress);
+      if (ShowDetailedWarning) {
+        WithColor::warning()
+            << "Duplicated symbol start address at "
+            << format("%8" PRIx64, StartAddress) << " "
+            << R.first->second.getFuncName() << " and " << funcName << "\n";
       }
     }
   }
