@@ -1307,6 +1307,7 @@ SampleContextFrameVector ProfiledBinary::symbolize(const InstructionPointer &IP,
 
     uint32_t Discriminator = CallerFrame.Discriminator;
     uint32_t LineOffset = (CallerFrame.Line - CallerFrame.StartLine) & 0xffff;
+    
     if (UseProbeDiscriminator) {
       LineOffset =
           PseudoProbeDwarfDiscriminator::extractProbeIndex(Discriminator);

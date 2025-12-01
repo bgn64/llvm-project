@@ -2077,6 +2077,84 @@ bool SampleProfileLoader::doInitialization(Module &M,
     }
   }
 
+  // Build SymbolMap early so we can adjust profile line numbers before
+  // any profile queries are made.
+  auto Remapper = Reader->getRemapper();
+  for (const auto &N_F : M.getValueSymbolTable()) {
+    StringRef OrigName = N_F.getKey();
+    Function *F = dyn_cast<Function>(N_F.getValue());
+    if (F == nullptr || OrigName.empty())
+      continue;
+    SymbolMap[FunctionId(OrigName)] = F;
+    StringRef NewName = FunctionSamples::getCanonicalFnName(*F);
+    if (OrigName != NewName && !NewName.empty()) {
+      auto r = SymbolMap.emplace(FunctionId(NewName), F);
+      // Failing to insert means there is already an entry in SymbolMap,
+      // thus there are multiple functions that are mapped to the same
+      // stripped name. In this case of name conflicting, set the value
+      // to nullptr to avoid confusion.
+      if (!r.second)
+        r.first->second = nullptr;
+      OrigName = NewName;
+    }
+    // Insert the remapped names into SymbolMap.
+    if (Remapper) {
+      if (auto MapName = Remapper->lookUpNameInProfile(OrigName)) {
+        if (*MapName != OrigName && !MapName->empty())
+          SymbolMap.emplace(FunctionId(*MapName), F);
+      }
+    }
+  }
+
+  // Adjust profile line numbers to match IR debug metadata offsets.
+  // The Reader uses the Module's debug info to calculate offsets between
+  // function declarations and scope lines (opening braces).
+  Reader->adjustProfileLineNumbers(SymbolMap);
+
+  // Debug: Print adjusted profile line numbers
+  llvm::outs() << "=== Adjusted Profile Line Numbers ===\n";
+  
+  // Helper lambda to recursively print function samples with offset info
+  std::function<void(const FunctionSamples &, unsigned)> printFunctionWithOffsets;
+  printFunctionWithOffsets = [&](const FunctionSamples &FS, unsigned Indent) {
+    FunctionId FuncId = FS.getFunction();
+    Function *F = SymbolMap.lookup(FuncId);
+    
+    std::string IndentStr(Indent, ' ');
+    
+    if (F) {
+      unsigned FuncDeclLine = getFunctionLoc(*F);
+      unsigned OpenBraceLine = 0;
+      if (DISubprogram *SP = F->getSubprogram()) {
+        OpenBraceLine = SP->getScopeLine();
+      }
+      int Offset = (OpenBraceLine > 0) ? (OpenBraceLine - FuncDeclLine) : 0;
+      
+      llvm::outs() << IndentStr << FuncId << " [decl:" << FuncDeclLine 
+             << " scope:" << OpenBraceLine << " offset:" << Offset
+             << "] samples:" << FS.getTotalSamples() << "\n";
+    } else {
+      llvm::outs() << IndentStr << FuncId << " [no debug info]"
+             << " samples:" << FS.getTotalSamples() << "\n";
+    }
+    
+    FS.print(llvm::outs(), Indent / 2 + 1);
+    
+    // Recursively print inlined callsites with their offset info
+    for (const auto &[Loc, CallsiteMap] : FS.getCallsiteSamples()) {
+      for (const auto &[CalleeName, CalleeSamples] : CallsiteMap) {
+        llvm::outs() << IndentStr << "  Inlined at line " << Loc.LineOffset << ":\n";
+        printFunctionWithOffsets(CalleeSamples, Indent + 4);
+      }
+    }
+  };
+  
+  for (const auto &[HashCode, FuncSamples] : Reader->getProfiles()) {
+    printFunctionWithOffsets(FuncSamples, 0);
+  }
+  
+  llvm::outs() << "=== End Adjusted Profile ===\n";
+
   if (ReportProfileStaleness || PersistProfileStaleness ||
       SalvageStaleProfile) {
     MatchingManager = std::make_unique<SampleProfileMatcher>(
@@ -2162,6 +2240,8 @@ void SampleProfileLoader::removePseudoProbeInstsDiscriminator(Module &M) {
   }
 }
 
+
+
 bool SampleProfileLoader::runOnModule(Module &M, ModuleAnalysisManager &AM,
                                       ProfileSummaryInfo *_PSI) {
   GUIDToFuncNameMapper Mapper(M, *Reader, GUIDToFuncNameMap);
@@ -2176,34 +2256,6 @@ bool SampleProfileLoader::runOnModule(Module &M, ModuleAnalysisManager &AM,
   if (FunctionSamples::ProfileIsProbeBased &&
       rejectHighStalenessProfile(M, PSI, Reader->getProfiles()))
     return false;
-
-  auto Remapper = Reader->getRemapper();
-  // Populate the symbol map.
-  for (const auto &N_F : M.getValueSymbolTable()) {
-    StringRef OrigName = N_F.getKey();
-    Function *F = dyn_cast<Function>(N_F.getValue());
-    if (F == nullptr || OrigName.empty())
-      continue;
-    SymbolMap[FunctionId(OrigName)] = F;
-    StringRef NewName = FunctionSamples::getCanonicalFnName(*F);
-    if (OrigName != NewName && !NewName.empty()) {
-      auto r = SymbolMap.emplace(FunctionId(NewName), F);
-      // Failiing to insert means there is already an entry in SymbolMap,
-      // thus there are multiple functions that are mapped to the same
-      // stripped name. In this case of name conflicting, set the value
-      // to nullptr to avoid confusion.
-      if (!r.second)
-        r.first->second = nullptr;
-      OrigName = NewName;
-    }
-    // Insert the remapped names into SymbolMap.
-    if (Remapper) {
-      if (auto MapName = Remapper->lookUpNameInProfile(OrigName)) {
-        if (*MapName != OrigName && !MapName->empty())
-          SymbolMap.emplace(FunctionId(*MapName), F);
-      }
-    }
-  }
 
   // Stale profile matching.
   if (ReportProfileStaleness || PersistProfileStaleness ||
