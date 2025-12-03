@@ -2141,6 +2141,8 @@ bool SampleProfileLoader::doInitialization(Module &M,
   
   Reader->adjustProfileLineNumbers(SymbolMap);
 
+/*
+
   // Write the adjusted profile to disk
   std::string AdjustedProfilePath = Filename + ".adjusted";
   auto WriterOrErr = SampleProfileWriter::create(AdjustedProfilePath, Reader->getFormat());
@@ -2154,6 +2156,8 @@ bool SampleProfileLoader::doInitialization(Module &M,
       llvm::outs() << "SUCCESS: Adjusted profile written to: " << AdjustedProfilePath << "\n";
     }
   }
+
+  */
   llvm::outs() << "=============================================\n";
 
   if (ReportProfileStaleness || PersistProfileStaleness ||
