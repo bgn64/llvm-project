@@ -61,6 +61,7 @@
 #include "llvm/ProfileData/InstrProf.h"
 #include "llvm/ProfileData/SampleProf.h"
 #include "llvm/ProfileData/SampleProfReader.h"
+#include "llvm/ProfileData/SampleProfWriter.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
@@ -192,6 +193,20 @@ static cl::opt<bool> ProfileSizeInline(
 // Since profiles are consumed by many passes, turning on this option has
 // side effects. For instance, pre-link SCC inliner would see merged profiles
 // and inline the hot functions (that are skipped in this pass).
+// ============================================================================
+// MANUAL CONFIGURATION: Sample Profile Line Number Adjustment
+// ============================================================================
+// To switch between adjusted and unadjusted profile handling:
+//
+// OPTION 1 (DEFAULT): Profile line numbers are ALREADY adjusted
+//   - Comment out the adjustment block below (lines marked "OPTION 2")
+//   - Profile is used as-is, no adjustment or writing
+//
+// OPTION 2: Profile line numbers need adjustment
+//   - Uncomment the adjustment block below (lines marked "OPTION 2")
+//   - Profile will be adjusted and written to disk with .adjusted suffix
+// ============================================================================
+
 static cl::opt<bool> DisableSampleLoaderInlining(
     "disable-sample-loader-inlining", cl::Hidden, cl::init(false),
     cl::desc(
@@ -2077,6 +2092,74 @@ bool SampleProfileLoader::doInitialization(Module &M,
     }
   }
 
+  // Build SymbolMap early so we can adjust profile line numbers before
+  // any profile queries are made.
+  auto Remapper = Reader->getRemapper();
+  for (const auto &N_F : M.getValueSymbolTable()) {
+    StringRef OrigName = N_F.getKey();
+    Function *F = dyn_cast<Function>(N_F.getValue());
+    if (F == nullptr || OrigName.empty())
+      continue;
+    SymbolMap[FunctionId(OrigName)] = F;
+    StringRef NewName = FunctionSamples::getCanonicalFnName(*F);
+    if (OrigName != NewName && !NewName.empty()) {
+      auto r = SymbolMap.emplace(FunctionId(NewName), F);
+      // Failing to insert means there is already an entry in SymbolMap,
+      // thus there are multiple functions that are mapped to the same
+      // stripped name. In this case of name conflicting, set the value
+      // to nullptr to avoid confusion.
+      if (!r.second)
+        r.first->second = nullptr;
+      OrigName = NewName;
+    }
+    // Insert the remapped names into SymbolMap.
+    if (Remapper) {
+      if (auto MapName = Remapper->lookUpNameInProfile(OrigName)) {
+        if (*MapName != OrigName && !MapName->empty())
+          SymbolMap.emplace(FunctionId(*MapName), F);
+      }
+    }
+  }
+
+  // ============================================================================
+  // OPTION 1 (DEFAULT): Using profile as-is (line numbers already adjusted)
+  // ============================================================================
+  /*
+  llvm::outs() << "=== Sample Profile Line Number Adjustment ===\n";
+  llvm::outs() << "Profile file: " << Filename << "\n";
+  llvm::outs() << "Action: Using profile as-is (line numbers already adjusted)\n";
+  llvm::outs() << "=============================================\n";
+  */
+
+  // ============================================================================
+  // OPTION 2: Adjust unadjusted profile and write to disk
+  // ============================================================================
+  // UNCOMMENT THE BLOCK BELOW to adjust line numbers and write adjusted profile:
+  llvm::outs() << "=== Sample Profile Line Number Adjustment ===\n";
+  llvm::outs() << "Profile file: " << Filename << "\n";
+  llvm::outs() << "Action: Adjusting line numbers and writing adjusted profile\n";
+  
+  Reader->adjustProfileLineNumbers(SymbolMap);
+
+/*
+
+  // Write the adjusted profile to disk
+  std::string AdjustedProfilePath = Filename + ".adjusted";
+  auto WriterOrErr = SampleProfileWriter::create(AdjustedProfilePath, Reader->getFormat());
+  if (std::error_code EC = WriterOrErr.getError()) {
+    llvm::errs() << "ERROR: Failed to create adjusted profile writer: " << EC.message() << "\n";
+  } else {
+    auto Writer = std::move(WriterOrErr.get());
+    if (std::error_code EC = Writer->write(Reader->getProfiles())) {
+      llvm::errs() << "ERROR: Failed to write adjusted profile: " << EC.message() << "\n";
+    } else {
+      llvm::outs() << "SUCCESS: Adjusted profile written to: " << AdjustedProfilePath << "\n";
+    }
+  }
+
+  */
+  llvm::outs() << "=============================================\n";
+
   if (ReportProfileStaleness || PersistProfileStaleness ||
       SalvageStaleProfile) {
     MatchingManager = std::make_unique<SampleProfileMatcher>(
@@ -2162,6 +2245,8 @@ void SampleProfileLoader::removePseudoProbeInstsDiscriminator(Module &M) {
   }
 }
 
+
+
 bool SampleProfileLoader::runOnModule(Module &M, ModuleAnalysisManager &AM,
                                       ProfileSummaryInfo *_PSI) {
   GUIDToFuncNameMapper Mapper(M, *Reader, GUIDToFuncNameMap);
@@ -2176,34 +2261,6 @@ bool SampleProfileLoader::runOnModule(Module &M, ModuleAnalysisManager &AM,
   if (FunctionSamples::ProfileIsProbeBased &&
       rejectHighStalenessProfile(M, PSI, Reader->getProfiles()))
     return false;
-
-  auto Remapper = Reader->getRemapper();
-  // Populate the symbol map.
-  for (const auto &N_F : M.getValueSymbolTable()) {
-    StringRef OrigName = N_F.getKey();
-    Function *F = dyn_cast<Function>(N_F.getValue());
-    if (F == nullptr || OrigName.empty())
-      continue;
-    SymbolMap[FunctionId(OrigName)] = F;
-    StringRef NewName = FunctionSamples::getCanonicalFnName(*F);
-    if (OrigName != NewName && !NewName.empty()) {
-      auto r = SymbolMap.emplace(FunctionId(NewName), F);
-      // Failiing to insert means there is already an entry in SymbolMap,
-      // thus there are multiple functions that are mapped to the same
-      // stripped name. In this case of name conflicting, set the value
-      // to nullptr to avoid confusion.
-      if (!r.second)
-        r.first->second = nullptr;
-      OrigName = NewName;
-    }
-    // Insert the remapped names into SymbolMap.
-    if (Remapper) {
-      if (auto MapName = Remapper->lookUpNameInProfile(OrigName)) {
-        if (*MapName != OrigName && !MapName->empty())
-          SymbolMap.emplace(FunctionId(*MapName), F);
-      }
-    }
-  }
 
   // Stale profile matching.
   if (ReportProfileStaleness || PersistProfileStaleness ||

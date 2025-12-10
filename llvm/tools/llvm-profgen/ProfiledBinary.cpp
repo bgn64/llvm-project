@@ -11,6 +11,11 @@
 #include "MissingFrameInferrer.h"
 #include "Options.h"
 #include "ProfileGenerator.h"
+#include "llvm/DebugInfo/PDB/PDB.h"
+#include "llvm/DebugInfo/PDB/IPDBSession.h"
+#include "llvm/DebugInfo/PDB/ConcreteSymbolEnumerator.h"
+#include "llvm/DebugInfo/PDB/PDBSymbolExe.h"
+#include "llvm/DebugInfo/PDB/PDBSymbolFunc.h"
 #include "llvm/DebugInfo/Symbolize/SymbolizableModule.h"
 #include "llvm/Demangle/Demangle.h"
 #include "llvm/IR/DebugInfoMetadata.h"
@@ -189,7 +194,10 @@ ProfiledBinary::ProfiledBinary(const StringRef ExeBinPath,
       Symbolizer(std::make_unique<symbolize::LLVMSymbolizer>(SymbolizerOpts)),
       TrackFuncContextSize(EnableCSPreInliner && UseContextCostForPreInliner) {
   // Point to executable binary if debug info binary is not specified.
-  SymbolizerPath = DebugBinPath.empty() ? ExeBinPath : DebugBinPath;
+  // For PDB files, always use the executable path for symbolization
+  SymbolizerPath = DebugBinPath.empty() || 
+                   StringRef(DebugBinPath).ends_with_insensitive(".pdb") ? 
+                   ExeBinPath : DebugBinPath;
   if (InferMissingFrames)
     MissingContextInferrer = std::make_unique<MissingFrameInferrer>(this);
   load();
@@ -239,19 +247,32 @@ void ProfiledBinary::load() {
 
   LLVM_DEBUG(dbgs() << "Loading " << Path << "\n");
 
+  // Extract build ID from the binary
+  if (IsCOFF) {
+    // For COFF files, extract GUID + Age from debug directory
+    BinaryBuildID = object::getCOFFDebugID(Obj);
+  } else {
+    // For ELF files, extract GNU build ID
+    object::BuildIDRef BuildIDRef = object::getBuildID(Obj);
+    BinaryBuildID = object::BuildID(BuildIDRef.begin(), BuildIDRef.end());
+  }
+
   // Mark the binary as a kernel image;
   IsKernel = KernelBinary;
 
   // Find the preferred load address for text sections.
   setPreferredTextSegmentAddresses(Obj);
 
-  // Load debug info of subprograms from DWARF section.
   // If path of debug info binary is specified, use the debug info from it,
   // otherwise use the debug info from the executable binary.
   if (!DebugBinaryPath.empty()) {
-    OwningBinary<Binary> DebugPath =
-        unwrapOrError(createBinary(DebugBinaryPath), DebugBinaryPath);
-    loadSymbolsFromDWARF(*cast<ObjectFile>(DebugPath.getBinary()));
+    if (StringRef(DebugBinaryPath).ends_with_insensitive(".pdb")) {
+      loadSymbolsFromPDB(DebugBinaryPath);
+    } else {
+      OwningBinary<Binary> DebugPath =
+          unwrapOrError(createBinary(DebugBinaryPath), DebugBinaryPath);
+      loadSymbolsFromDWARF(*cast<ObjectFile>(DebugPath.getBinary()));
+    }
   } else {
     loadSymbolsFromDWARF(*cast<ObjectFile>(&ExeBinary));
   }
@@ -731,12 +752,21 @@ void ProfiledBinary::disassemble(const ObjectFile *Obj) {
   // sections are the candidates to dissassemble.
   std::map<SectionRef, SectionSymbolsTy> AllSymbols;
   StringRef FileName = Obj->getFileName();
-  for (const SymbolRef &Symbol : Obj->symbols()) {
-    const uint64_t Addr = unwrapOrError(Symbol.getAddress(), FileName);
-    const StringRef Name = unwrapOrError(Symbol.getName(), FileName);
-    section_iterator SecI = unwrapOrError(Symbol.getSection(), FileName);
-    if (SecI != Obj->section_end())
-      AllSymbols[*SecI].push_back(SymbolInfoTy(Addr, Name, ELF::STT_NOTYPE));
+  
+  // For COFF files with separate PDB files, populate symbols from PDB
+  // instead of relying on potentially stripped object file symbol table
+  if (IsCOFF && !DebugBinaryPath.empty() && 
+      StringRef(DebugBinaryPath).ends_with_insensitive(".pdb")) {
+    populateSymbolsFromPDB(Obj, AllSymbols);
+  } else {
+    // For other cases, use the traditional approach
+    for (const SymbolRef &Symbol : Obj->symbols()) {
+      const uint64_t Addr = unwrapOrError(Symbol.getAddress(), FileName);
+      const StringRef Name = unwrapOrError(Symbol.getName(), FileName);
+      section_iterator SecI = unwrapOrError(Symbol.getSection(), FileName);
+      if (SecI != Obj->section_end())
+        AllSymbols[*SecI].push_back(SymbolInfoTy(Addr, Name, ELF::STT_NOTYPE));
+    }
   }
 
   // Sort all the symbols. Use a stable sort to stabilize the output.
@@ -1044,6 +1074,181 @@ void ProfiledBinary::loadSymbolsFromDWARF(ObjectFile &Obj) {
   }
 }
 
+void ProfiledBinary::loadSymbolsFromPDB(const std::string &PDBPath) {
+  std::unique_ptr<pdb::IPDBSession> Session;
+  if (auto Err = pdb::loadDataForPDB(pdb::PDB_ReaderType::DIA, PDBPath, Session)) {
+    exitWithError("Failed to load PDB data: " + toString(std::move(Err)), PDBPath);
+  }
+
+  // Get global scope
+  auto GlobalScope = Session->getGlobalScope();
+  if (!GlobalScope) {
+    exitWithError("Failed to get global scope from PDB", PDBPath);
+  }
+
+  // Find all function symbols
+  auto Functions = GlobalScope->findAllChildren<pdb::PDBSymbolFunc>();
+  if (!Functions) {
+    exitWithError("Failed to enumerate function symbols in PDB", PDBPath);
+  }
+
+  while (auto Function = Functions->getNext()) {
+    // Get function name
+    std::string funcName = Function->getName();
+    if (funcName.empty()) {
+      continue;
+    }
+
+    // Get address and size information
+    uint32_t RVA = Function->getRelativeVirtualAddress();
+    uint64_t Length = Function->getLength();
+
+    if (RVA == 0 || Length == 0) {
+      continue;
+    }
+
+    // Calculate actual addresses - add preferred base to RVA
+    uint64_t StartAddress = getPreferredBaseAddress() + static_cast<uint64_t>(RVA);
+    uint64_t EndAddress = StartAddress + Length;
+
+    if (EndAddress <= StartAddress ||
+          StartAddress < getPreferredBaseAddress())
+        continue;
+
+    // Create or find the BinaryFunction
+    auto Ret = BinaryFunctions.emplace(funcName, BinaryFunction());
+    auto &Func = Ret.first->second;
+    if (Ret.second) {
+      Func.FuncName = Ret.first->first;
+    }
+
+    // Add the range to the function
+    Func.Ranges.emplace_back(StartAddress, EndAddress);
+
+    // Add to StartAddrToFuncRangeMap
+    auto R = StartAddrToFuncRangeMap.emplace(StartAddress, FuncRange());
+    if (R.second) {
+      FuncRange &FRange = R.first->second;
+      FRange.Func = &Func;
+      FRange.StartAddress = StartAddress;
+      FRange.EndAddress = EndAddress;
+      FRange.IsFuncEntry = true; // PDB functions are typically entry points
+    } else {
+      AddrsWithMultipleSymbols.insert(StartAddress);
+      if (ShowDetailedWarning) {
+        WithColor::warning()
+            << "Duplicated symbol start address at "
+            << format("%8" PRIx64, StartAddress) << " "
+            << R.first->second.getFuncName() << " and " << funcName << "\n";
+      }
+    }
+  }
+
+  if (BinaryFunctions.empty()) {
+    WithColor::warning() << "Loading of PDB info completed, but no binary "
+                            "functions have been retrieved. Check if the PDB file matches the binary.\n";
+  } else {
+    WithColor::note() << "Successfully loaded " << BinaryFunctions.size() 
+                      << " functions from PDB file.\n";
+  }
+
+  // Populate the hash binary function map for MD5 function name lookup
+  for (auto &BinaryFunction : BinaryFunctions) {
+    HashBinaryFunctions[MD5Hash(StringRef(BinaryFunction.first))] =
+        &BinaryFunction.second;
+  }
+
+  if (!AddrsWithMultipleSymbols.empty()) {
+    WithColor::warning() << "Found " << AddrsWithMultipleSymbols.size()
+                         << " start addresses with multiple symbols\n";
+    AddrsWithMultipleSymbols.clear();
+  }
+}
+
+void ProfiledBinary::populateSymbolsFromPDB(const ObjectFile *Obj, 
+                                            std::map<SectionRef, SectionSymbolsTy> &AllSymbols) {
+  std::unique_ptr<pdb::IPDBSession> Session;
+  if (auto Err = pdb::loadDataForPDB(pdb::PDB_ReaderType::DIA, DebugBinaryPath, Session)) {
+    WithColor::warning() << "Failed to load PDB data for symbol reading: " 
+                         << toString(std::move(Err)) << "\n";
+    
+    // Fall back to object file symbols
+    StringRef FileName = Obj->getFileName();
+    for (const SymbolRef &Symbol : Obj->symbols()) {
+      const uint64_t Addr = unwrapOrError(Symbol.getAddress(), FileName);
+      const StringRef Name = unwrapOrError(Symbol.getName(), FileName);
+      section_iterator SecI = unwrapOrError(Symbol.getSection(), FileName);
+      if (SecI != Obj->section_end())
+        AllSymbols[*SecI].push_back(SymbolInfoTy(Addr, Name, ELF::STT_NOTYPE));
+    }
+    return;
+  }
+
+  // Set load address for the session - this is crucial for correct address calculation
+  uint64_t preferredBase = getPreferredBaseAddress();
+  if (preferredBase != 0) {
+    if (!Session->setLoadAddress(preferredBase)) {
+      WithColor::warning() << "Failed to set load address for PDB session\n";
+    }
+  }
+
+  // Get global scope
+  auto GlobalScope = Session->getGlobalScope();
+  if (!GlobalScope) {
+    WithColor::warning() << "Failed to get global scope from PDB for symbol reading\n";
+    return;
+  }
+
+  // Find all function symbols
+  auto Functions = GlobalScope->findAllChildren<pdb::PDBSymbolFunc>();
+  if (!Functions) {
+    WithColor::warning() << "Failed to enumerate function symbols in PDB\n";
+    return;
+  }
+
+  while (auto Function = Functions->getNext()) {
+    // Get function name
+    std::string funcName = Function->getName();
+    if (funcName.empty()) {
+      continue;
+    }
+
+    // Get address information
+    uint32_t RVA = Function->getRelativeVirtualAddress();
+    uint64_t Length = Function->getLength();
+
+    if (RVA == 0 || Length == 0) {
+      continue;
+    }
+
+    // Calculate actual addresses - add preferred base to RVA
+    uint64_t StartAddress = preferredBase + static_cast<uint64_t>(RVA);
+
+    // Find which section this address belongs to
+    for (section_iterator SI = Obj->section_begin(), SE = Obj->section_end(); SI != SE; ++SI) {
+      const SectionRef &Section = *SI;
+      uint64_t SectionStart = Section.getAddress();
+      uint64_t SectionEnd = SectionStart + Section.getSize();
+      
+      // Check if the symbol address falls within this section
+      if (StartAddress >= SectionStart && StartAddress < SectionEnd) {
+        // Store the function name in NameStrings to ensure it persists
+        auto NameIter = NameStrings.insert(funcName);
+        StringRef PersistentName = StringRef(*NameIter.first);
+        
+        // Add symbol to the appropriate section
+        AllSymbols[Section].push_back(SymbolInfoTy(StartAddress, PersistentName, 0 /* Type */));
+        break;
+      }
+    }
+  }
+
+  // Sort the symbols in each section
+  for (auto &SecSyms : AllSymbols) {
+    stable_sort(SecSyms.second);
+  }
+}
+
 void ProfiledBinary::populateSymbolListFromDWARF(
     ProfileSymbolList &SymbolList) {
   for (auto &I : StartAddrToFuncRangeMap)
@@ -1059,6 +1264,23 @@ symbolize::LLVMSymbolizer::Options ProfiledBinary::getSymbolizerOpts() const {
   SymbolizerOpts.UseSymbolTable = false;
   SymbolizerOpts.RelativeAddresses = false;
   SymbolizerOpts.DWPName = DWPPath;
+  
+  if (!DebugBinaryPath.empty() && 
+      StringRef(DebugBinaryPath).ends_with_insensitive(".pdb")) {
+    SymbolizerOpts.UseDIA = true;
+    
+    // Add the directory containing the PDB to the debug search paths
+    std::string PDBDir = DebugBinaryPath;
+    size_t LastSlash = PDBDir.find_last_of("/\\");
+    if (LastSlash != std::string::npos) {
+      PDBDir = PDBDir.substr(0, LastSlash);
+      SymbolizerOpts.DebugFileDirectory.push_back(PDBDir);
+    }
+    
+    // Also try to help the symbolizer by providing hints about where to find debug info
+    SymbolizerOpts.DsymHints.push_back(DebugBinaryPath);
+  }
+
   return SymbolizerOpts;
 }
 
@@ -1085,6 +1307,7 @@ SampleContextFrameVector ProfiledBinary::symbolize(const InstructionPointer &IP,
 
     uint32_t Discriminator = CallerFrame.Discriminator;
     uint32_t LineOffset = (CallerFrame.Line - CallerFrame.StartLine) & 0xffff;
+    
     if (UseProbeDiscriminator) {
       LineOffset =
           PseudoProbeDwarfDiscriminator::extractProbeIndex(Discriminator);

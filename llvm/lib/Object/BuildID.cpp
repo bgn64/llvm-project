@@ -15,6 +15,8 @@
 #include "llvm/Object/BuildID.h"
 
 #include "llvm/Object/ELFObjectFile.h"
+#include "llvm/Object/COFF.h"
+#include "llvm/Object/CVDebugRecord.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
 
@@ -58,6 +60,39 @@ template <typename ELFT> BuildIDRef getBuildID(const ELFFile<ELFT> &Obj) {
 
 } // namespace
 
+// Helper function to extract GUID + Age from COFF debug directory
+static BuildID getCOFFBuildID(const COFFObjectFile *Obj) {
+  for (const auto &DebugDir : Obj->debug_directories()) {
+    if (DebugDir.Type != COFF::IMAGE_DEBUG_TYPE_CODEVIEW)
+      continue;
+      
+    const codeview::DebugInfo *DebugInfo;
+    StringRef PDBFileName;
+    if (auto EC = Obj->getDebugPDBInfo(&DebugDir, DebugInfo, PDBFileName))
+      continue;
+      
+    // Check if this is PDB 7.0 format (RSDS)
+    if (DebugInfo->PDB70.CVSignature == OMF::Signature::PDB70) {
+      BuildID Result;
+      Result.reserve(20); // 16 bytes GUID + 4 bytes Age
+      
+      // Add the 16-byte GUID
+      const uint8_t *GuidBytes = DebugInfo->PDB70.Signature;
+      Result.append(GuidBytes, GuidBytes + 16);
+      
+      // Add the 4-byte Age (little-endian)
+      uint32_t Age = DebugInfo->PDB70.Age;
+      Result.push_back(Age & 0xFF);
+      Result.push_back((Age >> 8) & 0xFF);
+      Result.push_back((Age >> 16) & 0xFF);
+      Result.push_back((Age >> 24) & 0xFF);
+      
+      return Result;
+    }
+  }
+  return {};
+}
+
 BuildID llvm::object::parseBuildID(StringRef Str) {
   std::string Bytes;
   if (!tryGetFromHex(Str, Bytes))
@@ -76,6 +111,12 @@ BuildIDRef llvm::object::getBuildID(const ObjectFile *Obj) {
     return ::getBuildID(O->getELFFile());
   if (auto *O = dyn_cast<ELFObjectFile<ELF64BE>>(Obj))
     return ::getBuildID(O->getELFFile());
+  return {};
+}
+
+BuildID llvm::object::getCOFFDebugID(const ObjectFile *Obj) {
+  if (auto *COFFObj = dyn_cast<COFFObjectFile>(Obj))
+    return getCOFFBuildID(COFFObj);
   return {};
 }
 
