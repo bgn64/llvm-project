@@ -36,6 +36,9 @@ LLVM_ABI BuildID parseBuildID(StringRef Str);
 /// Returns the build ID, if any, contained in the given object file.
 LLVM_ABI BuildIDRef getBuildID(const ObjectFile *Obj);
 
+/// Returns the COFF debug info (GUID + Age), if any, contained in the given COFF object file.
+LLVM_ABI BuildID getCOFFDebugID(const ObjectFile *Obj);
+
 /// BuildIDFetcher searches local cache directories for debug info.
 class LLVM_ABI BuildIDFetcher {
 public:

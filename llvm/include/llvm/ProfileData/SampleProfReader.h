@@ -521,6 +521,14 @@ public:
     FuncNameToProfNameMap = &FPMap;
   }
 
+  /// Adjust profile line numbers to match IR debug metadata offsets.
+  /// This is needed when profile line numbers are relative to function body
+  /// but IR line numbers are absolute. Uses the Module's debug metadata to
+  /// calculate the offset between function declaration and scope line.
+  /// \param FunctionMap maps profile function IDs to IR Function objects.
+  LLVM_ABI void adjustProfileLineNumbers(
+      const HashKeyMap<std::unordered_map, FunctionId, Function *> &FunctionMap);
+
 protected:
   /// Map every function to its associated profile.
   ///

@@ -354,6 +354,11 @@ PerfReaderBase::create(ProfiledBinary *Binary, PerfInputFile &PerfInput,
     return PerfReader;
   }
 
+  if (PerfInput.Format == PerfFormat::SPT) {
+    PerfReader.reset(new SPTPerfReader(Binary, PerfInput.InputFile));
+    return PerfReader;
+  }
+
   // For perf data input, we need to convert them into perf script first.
   // If this is a kernel perf file, there is no need for retrieving PIDs.
   if (PerfInput.Format == PerfFormat::PerfData)
@@ -1368,6 +1373,375 @@ void PerfScriptReader::parsePerfTraces() {
 }
 
 SmallVector<CleanupInstaller, 2> PerfScriptReader::TempFileCleanups;
+
+// SPTPerfReader implementation
+
+// SPT file format structures (translated from spt.rs)
+namespace {
+constexpr uint32_t SPT_SIGNATURE = 0x5350543A;
+
+#pragma pack(push, 1)
+struct SPTHeader {
+  uint32_t Signature;
+  uint32_t Version;
+  uint32_t RawDataId;
+  uint32_t TargetArch;
+  uint32_t StrTableOffset;
+  uint32_t ProgIdsOffset;
+  uint16_t CbStrTableUsed;
+  uint16_t CbStrTableCapacity;
+  uint16_t ProgIdsUsed;
+  uint16_t ProgIdsCapacity;
+};
+
+struct SPTProgramID {
+  uint32_t GuidPart[4];
+  uint32_t Age;
+  uint32_t NameOffset;
+};
+
+struct SPTCommonEvent {
+  uint8_t numEvents;
+};
+#pragma pack(pop)
+
+enum class SPTOpcode : uint8_t {
+  SPT_OP_LBR = 0x10,
+  SPT_OP_BINARY_ID = 0x81,
+  // Add other opcodes as needed
+  SPT_OP_UNHALT_CYCLE = 0x01,
+  SPT_OP_RETIRE_INSTR = 0x02,
+  SPT_OP_RETIRE_BR_INSTR = 0x03,
+  SPT_OP_L1_DCACHE_MISS = 0x04,
+  SPT_OP_L1_ICACHE_MISS = 0x05,
+  SPT_OP_ETW_INSTR = 0x41,
+  SPT_OP_ETW_CALLSTACK = 0x42,
+  SPT_OP_REPEAT = 0x82,
+};
+
+struct SPTBinaryID {
+  uint8_t lengthPad;
+  uint16_t binaryId;
+  uint32_t lenBinaryEvts;
+};
+}
+
+void SPTPerfReader::computeCounterFromLBR(const llvm::sampleprof::SPTLBREntry *LBREntries, uint8_t NumEvents) {
+  SampleCounter &Counter = SampleCounters.begin()->second;
+  uint64_t EndAddress = 0;
+  
+  for (uint8_t i = 0; i < NumEvents; i++) {
+    uint64_t Source = LBREntries[i].sourceRva.rva;
+    uint64_t Target = LBREntries[i].targetRva.rva;
+    
+    // Convert RVA to virtual address by adding base address
+    Source += Binary->getBaseAddress();
+    Target += Binary->getBaseAddress();
+    
+    // Canonicalize to use preferred load address as base address.
+    Source = Binary->canonicalizeVirtualAddress(Source);
+    Target = Binary->canonicalizeVirtualAddress(Target);
+    bool SrcIsInternal = Binary->addressIsCode(Source);
+    bool DstIsInternal = Binary->addressIsCode(Target);
+    if (!SrcIsInternal)
+      Source = ExternalAddr;
+    if (!DstIsInternal)
+      Target = ExternalAddr;
+    // Filter external-to-external case to reduce LBR trace size.
+    if (!SrcIsInternal && !DstIsInternal)
+      continue;
+
+    // Record the branch if its TargetAddress is internal. It can be the case an
+    // external source call an internal function, later this branch will be used
+    // to generate the function's head sample.
+    if (Binary->addressIsCode(Target)) {
+      Counter.recordBranchCount(Source, Target, 1);
+    }
+
+    // If this not the first LBR, update the range count between TO of current
+    // LBR and FROM of next LBR.
+    uint64_t StartAddress = Target;
+    if (Binary->addressIsCode(StartAddress) &&
+        Binary->addressIsCode(EndAddress) &&
+        isValidFallThroughRange(StartAddress, EndAddress, Binary))
+      Counter.recordRangeCount(StartAddress, EndAddress, 1);
+    EndAddress = Source;
+  }
+}
+
+void SPTPerfReader::computeCounterFromRVA(const llvm::sampleprof::SPTRVA *RVAs, uint8_t NumEvents) {
+  SampleCounter &Counter = SampleCounters.begin()->second;
+  
+  for (uint8_t i = 0; i < NumEvents; i++) {
+    uint64_t RVA = RVAs[i].rva;
+    
+    // Convert RVA to virtual address by adding base address
+    uint64_t VirtualAddr = RVA + Binary->getBaseAddress();
+    
+    // Canonicalize to use preferred load address as base address
+    VirtualAddr = Binary->canonicalizeVirtualAddress(VirtualAddr);
+    
+    // Only process internal addresses
+    if (Binary->addressIsCode(VirtualAddr)) {
+      // Record a single-instruction range: the instruction at this address
+      // We use the same address for both start and end to represent a single instruction
+      Counter.recordRangeCount(VirtualAddr, VirtualAddr, 1);
+    }
+  }
+}
+
+void SPTPerfReader::writeUnsymbolizedProfile(StringRef Filename) {
+  std::error_code EC;
+  raw_fd_ostream OS(Filename, EC, llvm::sys::fs::OF_TextWithCRLF);
+  if (EC)
+    exitWithError(EC, Filename);
+  writeUnsymbolizedProfile(OS);
+}
+
+void SPTPerfReader::writeUnsymbolizedProfile(raw_fd_ostream &OS) {
+  // Use ordered map to make the output deterministic
+  std::map<std::string, SampleCounter *> OrderedCounters;
+  for (auto &CI : SampleCounters) {
+    OrderedCounters[getContextKeyStr(CI.first.getPtr(), Binary)] = &CI.second;
+  }
+
+  auto SCounterPrinter = [&](RangeSample &Counter, StringRef Separator,
+                             uint32_t Indent) {
+    OS.indent(Indent);
+    OS << Counter.size() << "\n";
+    for (auto &I : Counter) {
+      uint64_t Start = I.first.first;
+      uint64_t End = I.first.second;
+
+      if (UseOffset) {
+        if (UseLoadableSegmentAsBase) {
+          Start -= Binary->getFirstLoadableAddress();
+          End -= Binary->getFirstLoadableAddress();
+        } else {
+          Start -= Binary->getPreferredBaseAddress();
+          End -= Binary->getPreferredBaseAddress();
+        }
+      }
+
+      OS.indent(Indent);
+      OS << Twine::utohexstr(Start) << Separator << Twine::utohexstr(End) << ":"
+         << I.second << "\n";
+    }
+  };
+
+  for (auto &CI : OrderedCounters) {
+    uint32_t Indent = 0;
+    if (ProfileIsCS) {
+      // Context string key
+      OS << "[" << CI.first << "]\n";
+      Indent = 2;
+    }
+
+    SampleCounter &Counter = *CI.second;
+    SCounterPrinter(Counter.RangeCounter, "-", Indent);
+    SCounterPrinter(Counter.BranchCounter, "->", Indent);
+  }
+}
+
+void SPTPerfReader::parsePerfTraces() {
+  auto BufferOrErr = MemoryBuffer::getFile(PerfTraceFile);
+  if (auto EC = BufferOrErr.getError()) {
+    exitWithError(EC, PerfTraceFile);
+  }
+  
+  MemoryBufferRef Buffer = **BufferOrErr;
+  const uint8_t *Data = reinterpret_cast<const uint8_t *>(Buffer.getBufferStart());
+  size_t Size = Buffer.getBufferSize();
+  
+  if (Size < sizeof(SPTHeader)) {
+    exitWithError("SPT file too small to contain header");
+  }
+  
+  // Validate header
+  const SPTHeader *Header = reinterpret_cast<const SPTHeader *>(Data);
+  if (Header->Signature != SPT_SIGNATURE) {
+    exitWithError("Invalid SPT file signature");
+  }
+  
+  // Validate GUID and age match between SPT and binary
+  if (Header->ProgIdsUsed > 0) {
+    if (Header->ProgIdsOffset + sizeof(SPTProgramID) > Size) {
+      exitWithError("Invalid SPT file format: program ID offset beyond file size");
+    }
+    
+    const SPTProgramID *ProgID = 
+        reinterpret_cast<const SPTProgramID *>(Data + Header->ProgIdsOffset);
+    
+    // Extract GUID from SPT (4 32-bit parts -> 16 bytes)
+    std::array<uint8_t, 16> SPTGuid;
+    for (int i = 0; i < 4; i++) {
+      uint32_t Part = ProgID->GuidPart[i];
+      // Store as little-endian bytes
+      SPTGuid[i * 4 + 0] = static_cast<uint8_t>(Part & 0xFF);
+      SPTGuid[i * 4 + 1] = static_cast<uint8_t>((Part >> 8) & 0xFF);
+      SPTGuid[i * 4 + 2] = static_cast<uint8_t>((Part >> 16) & 0xFF);
+      SPTGuid[i * 4 + 3] = static_cast<uint8_t>((Part >> 24) & 0xFF);
+    }
+    
+    uint32_t SPTAge = ProgID->Age;
+    
+    // Get GUID and age from binary
+    auto BinaryGUID = Binary->getCOFFDebugGUID();
+    auto BinaryAge = Binary->getCOFFDebugAge();
+    
+    if (!BinaryGUID || !BinaryAge) {
+      exitWithError("Binary does not contain COFF debug information required for SPT validation");
+    }
+    
+    // Compare GUID
+    if (SPTGuid != *BinaryGUID) {
+      exitWithError("SPT GUID does not match binary debug GUID");
+    }
+    
+    // Compare age
+    if (SPTAge != *BinaryAge) {
+      exitWithError("SPT age does not match binary debug age");
+    }
+  }
+  
+  // Calculate offset to event data
+  size_t EventOffset = Header->ProgIdsOffset + 
+                      (Header->ProgIdsCapacity * sizeof(SPTProgramID));
+  if (EventOffset >= Size) {
+    exitWithError("Invalid SPT file format: events offset beyond file size");
+  }
+  
+  // Parse events
+  size_t Offset = EventOffset;
+  
+  // Initialize counters for logging
+  uint64_t LBREventCount = 0;
+  uint64_t RVAEventCount = 0;
+  uint64_t TotalLBREntries = 0;
+  uint64_t TotalRVAEntries = 0;
+  
+  // Initialize empty context for LBR-only samples
+  assert(SampleCounters.empty() &&
+         "Sample counter map should be empty before raw profile generation");
+  std::shared_ptr<StringBasedCtxKey> Key =
+      std::make_shared<StringBasedCtxKey>();
+  SampleCounters.emplace(Hashable<ContextKey>(Key), SampleCounter());
+  
+  while (Offset < Size) {
+    if (Offset + 1 > Size) break;
+    
+    SPTOpcode Opcode = static_cast<SPTOpcode>(Data[Offset]);
+    Offset++;
+    
+    switch (Opcode) {
+      case SPTOpcode::SPT_OP_LBR: {
+        if (Offset + sizeof(SPTCommonEvent) > Size) {
+          exitWithError("Truncated SPT LBR event");
+        }
+        
+        const SPTCommonEvent *CommonEvent = 
+            reinterpret_cast<const SPTCommonEvent *>(Data + Offset);
+        Offset += sizeof(SPTCommonEvent);
+        
+        uint8_t NumEvents = CommonEvent->numEvents;
+        
+        size_t LBRDataSize = NumEvents * sizeof(llvm::sampleprof::SPTLBREntry);
+        
+        if (Offset + LBRDataSize > Size) {
+          exitWithError("Truncated SPT LBR data");
+        }
+        
+        const llvm::sampleprof::SPTLBREntry *LBREntries = 
+            reinterpret_cast<const llvm::sampleprof::SPTLBREntry *>(Data + Offset);
+        Offset += LBRDataSize;
+        
+        // Update LBR counters for logging
+        LBREventCount++;
+        TotalLBREntries += NumEvents;
+        
+        // Directly compute counters from LBR data
+        computeCounterFromLBR(LBREntries, NumEvents);
+        NumTotalSample++;
+        break;
+      }
+      
+      case SPTOpcode::SPT_OP_BINARY_ID: {
+        if (Offset + sizeof(SPTBinaryID) > Size) {
+          exitWithError("Truncated SPT binary ID event");
+        }
+        
+        const SPTBinaryID *BinaryID = 
+            reinterpret_cast<const SPTBinaryID *>(Data + Offset);
+        Offset += sizeof(SPTBinaryID);
+        
+        // Note: We don't skip lenBinaryEvts bytes - this field is for information only
+        // The Rust implementation also only advances by sizeof(SPT_EVT_BinaryID)
+        break;
+      }
+      
+      case SPTOpcode::SPT_OP_UNHALT_CYCLE:
+      case SPTOpcode::SPT_OP_RETIRE_INSTR:
+      case SPTOpcode::SPT_OP_RETIRE_BR_INSTR:
+      case SPTOpcode::SPT_OP_L1_DCACHE_MISS:
+      case SPTOpcode::SPT_OP_L1_ICACHE_MISS:
+      case SPTOpcode::SPT_OP_ETW_INSTR:
+      case SPTOpcode::SPT_OP_ETW_CALLSTACK: {
+        // Handle common events with RVA data
+        if (Offset + sizeof(SPTCommonEvent) > Size) {
+          exitWithError("Truncated SPT common event");
+        }
+        
+        const SPTCommonEvent *CommonEvent = 
+            reinterpret_cast<const SPTCommonEvent *>(Data + Offset);
+        Offset += sizeof(SPTCommonEvent);
+        
+        uint8_t NumEvents = CommonEvent->numEvents;
+        
+        size_t RVADataSize = NumEvents * sizeof(llvm::sampleprof::SPTRVA);
+        
+        if (Offset + RVADataSize > Size) {
+          exitWithError("Truncated SPT RVA data");
+        }
+        
+        const llvm::sampleprof::SPTRVA *RVAs = 
+            reinterpret_cast<const llvm::sampleprof::SPTRVA *>(Data + Offset);
+        Offset += RVADataSize;
+        
+        // Update RVA counters for logging
+        RVAEventCount++;
+        TotalRVAEntries += NumEvents;
+        
+        // Directly compute counters from RVA data
+        computeCounterFromRVA(RVAs, NumEvents);
+        break;
+      }
+      
+      default:
+        // Skip unknown opcodes by advancing one byte
+        // This is a simplified approach; real implementation might need
+        // more sophisticated parsing
+        break;
+    }
+  }
+  
+  // Log SPT data summary
+  if (LBREventCount > 0) {
+    outs() << "SPT file contains " << LBREventCount << " LBR events with " 
+           << TotalLBREntries << " total LBR entries\n";
+  } else {
+    outs() << "SPT file contains no LBR data\n";
+  }
+  
+  if (RVAEventCount > 0) {
+    outs() << "SPT file contains " << RVAEventCount << " RVA events with " 
+           << TotalRVAEntries << " total RVA entries\n";
+  } else {
+    outs() << "SPT file contains no RVA data\n";
+  }
+  
+  if (SkipSymbolization)
+    writeUnsymbolizedProfile(OutputFilename);
+}
 
 } // end namespace sampleprof
 } // end namespace llvm
