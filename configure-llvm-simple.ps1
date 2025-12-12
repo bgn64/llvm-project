@@ -1,0 +1,1 @@
+cmake -S llvm -B build-simple -G "Visual Studio 17 2022" -DCMAKE_BUILD_TYPE=Release -DLLVM_ENABLE_PROJECTS='clang;lld' -DLLVM_USE_LINKER=lld-link -DCMAKE_INSTALL_PREFIX=install-simple -DLLVM_TARGETS_TO_BUILD=X86
