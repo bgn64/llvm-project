@@ -60,6 +60,7 @@ namespace pdb {
   private:
     std::string getFunctionName(uint64_t Address, DINameKind NameKind) const;
     std::unique_ptr<IPDBSession> Session;
+    bool Is64Bit = false;
   };
 
 } // end namespace pdb

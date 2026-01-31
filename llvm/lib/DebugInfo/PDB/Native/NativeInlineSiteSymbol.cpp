@@ -75,6 +75,17 @@ std::string NativeInlineSiteSymbol::getName() const {
   LazyRandomTypeCollection &Types = Tpi->typeCollection();
   LazyRandomTypeCollection &Ids = Ipi->typeCollection();
   CVType InlineeType = Ids.getType(Sym.Inlinee);
+  
+  // Get the raw function name from the type record
+  StringRef FuncName = Ids.getTypeName(Sym.Inlinee);
+  
+  // If the name is already a mangled name (starts with '?' on Windows),
+  // return it directly without prepending scope. Mangled names already
+  // encode the full scope information.
+  if (FuncName.starts_with("?"))
+    return std::string(FuncName);
+  
+  // Otherwise, build the qualified name by prepending scope
   std::string QualifiedName;
   if (InlineeType.kind() == LF_MFUNC_ID) {
     MemberFuncIdRecord MFRecord;
@@ -94,7 +105,7 @@ std::string NativeInlineSiteSymbol::getName() const {
     }
   }
 
-  QualifiedName.append(std::string(Ids.getTypeName(Sym.Inlinee)));
+  QualifiedName.append(std::string(FuncName));
   return QualifiedName;
 }
 

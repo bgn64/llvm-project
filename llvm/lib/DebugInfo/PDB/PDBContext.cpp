@@ -39,12 +39,19 @@ PDBContext::getLineInfoForAddress(object::SectionedAddress Address,
   Result.FunctionName = getFunctionName(Address.Address, Specifier.FNKind);
 
   uint32_t Length = 1;
+  // First try to find a function symbol specifically
   std::unique_ptr<PDBSymbol> Symbol =
-      Session->findSymbolByAddress(Address.Address, PDB_SymType::None);
-  if (auto Func = dyn_cast_or_null<PDBSymbolFunc>(Symbol.get())) {
-    Length = Func->getLength();
-  } else if (auto Data = dyn_cast_or_null<PDBSymbolData>(Symbol.get())) {
-    Length = Data->getLength();
+      Session->findSymbolByAddress(Address.Address, PDB_SymType::Function);
+  PDBSymbolFunc *Func = nullptr;
+  if (auto F = dyn_cast_or_null<PDBSymbolFunc>(Symbol.get())) {
+    Length = F->getLength();
+    Func = F;
+  } else {
+    // If no function found, try to find any symbol (e.g., data symbol) for length
+    Symbol = Session->findSymbolByAddress(Address.Address, PDB_SymType::None);
+    if (auto Data = dyn_cast_or_null<PDBSymbolData>(Symbol.get())) {
+      Length = Data->getLength();
+    }
   }
 
   // If we couldn't find a symbol, then just assume 1 byte, so that we get
@@ -62,6 +69,18 @@ PDBContext::getLineInfoForAddress(object::SectionedAddress Address,
     Result.FileName = SourceFile->getFileName();
   Result.Column = LineInfo->getColumnNumber();
   Result.Line = LineInfo->getLineNumber();
+  
+  // Set StartLine to the first line of the function so that line numbers
+  // can be made relative to the function start
+  if (Func) {
+    auto FuncLineNumbers = Func->getLineNumbers();
+    if (FuncLineNumbers && FuncLineNumbers->getChildCount() > 0) {
+      if (auto FirstLine = FuncLineNumbers->getNext()) {
+        Result.StartLine = FirstLine->getLineNumber();
+      }
+    }
+  }
+  
   return Result;
 }
 
@@ -131,6 +150,19 @@ PDBContext::getInliningInfoForAddress(object::SectionedAddress Address,
       LineInfo.FileName = SourceFile->getFileName();
     LineInfo.Line = Line->getLineNumber();
     LineInfo.Column = Line->getColumnNumber();
+    
+    // Set StartLine by getting the first line from the inlinee line table.
+    // The inlinee line table provides lines relative to the inlined function's
+    // definition, so we need to find the base line of the inlined function.
+    // We can do this by calling findInlineeLines() which returns all lines for
+    // this inline site, and the first one will have the declaration line.
+    auto InlineeLines = Frame->getRawSymbol().findInlineeLines();
+    if (InlineeLines && InlineeLines->getChildCount() > 0) {
+      if (auto FirstLine = InlineeLines->getNext()) {
+        LineInfo.StartLine = FirstLine->getLineNumber();
+      }
+    }
+    
     InlineInfo.addFrame(LineInfo);
   }
 

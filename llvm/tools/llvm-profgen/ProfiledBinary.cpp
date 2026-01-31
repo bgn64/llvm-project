@@ -10,8 +10,18 @@
 #include "ErrorHandling.h"
 #include "MissingFrameInferrer.h"
 #include "ProfileGenerator.h"
+#include "llvm/DebugInfo/CodeView/SymbolDeserializer.h"
+#include "llvm/DebugInfo/CodeView/SymbolRecord.h"
+#include "llvm/DebugInfo/PDB/Native/DbiModuleDescriptor.h"
+#include "llvm/DebugInfo/PDB/Native/DbiModuleList.h"
+#include "llvm/DebugInfo/PDB/Native/DbiStream.h"
+#include "llvm/DebugInfo/PDB/Native/InputFile.h"
+#include "llvm/DebugInfo/PDB/Native/ModuleDebugStream.h"
+#include "llvm/DebugInfo/PDB/Native/NativeSession.h"
+#include "llvm/DebugInfo/PDB/Native/PDBFile.h"
+#include "llvm/DebugInfo/PDB/Native/PublicsStream.h"
+#include "llvm/DebugInfo/PDB/Native/SymbolStream.h"
 #include "llvm/DebugInfo/Symbolize/SymbolizableModule.h"
-#include "llvm/Demangle/Demangle.h"
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Object/COFF.h"
@@ -175,7 +185,10 @@ ProfiledBinary::ProfiledBinary(const StringRef ExeBinPath,
       Symbolizer(std::make_unique<symbolize::LLVMSymbolizer>(SymbolizerOpts)),
       TrackFuncContextSize(EnableCSPreInliner && UseContextCostForPreInliner) {
   // Point to executable binary if debug info binary is not specified.
-  SymbolizerPath = DebugBinPath.empty() ? ExeBinPath : DebugBinPath;
+  // For PDB files, always use the executable path for symbolization
+  SymbolizerPath = DebugBinPath.empty() || 
+                   StringRef(DebugBinPath).ends_with_insensitive(".pdb") ? 
+                   ExeBinPath : DebugBinPath;
   if (InferMissingFrames)
     MissingContextInferrer = std::make_unique<MissingFrameInferrer>(this);
   load();
@@ -225,19 +238,32 @@ void ProfiledBinary::load() {
 
   LLVM_DEBUG(dbgs() << "Loading " << Path << "\n");
 
+  // Extract build ID from the binary
+  if (IsCOFF) {
+    // For COFF files, extract GUID + Age from debug directory
+    BinaryBuildID = object::getCOFFDebugID(Obj);
+  } else {
+    // For ELF files, extract GNU build ID
+    object::BuildIDRef BuildIDRef = object::getBuildID(Obj);
+    BinaryBuildID = object::BuildID(BuildIDRef.begin(), BuildIDRef.end());
+  }
+
   // Mark the binary as a kernel image;
   IsKernel = KernelBinary;
 
   // Find the preferred load address for text sections.
   setPreferredTextSegmentAddresses(Obj);
 
-  // Load debug info of subprograms from DWARF section.
   // If path of debug info binary is specified, use the debug info from it,
   // otherwise use the debug info from the executable binary.
   if (!DebugBinaryPath.empty()) {
-    OwningBinary<Binary> DebugPath =
-        unwrapOrError(createBinary(DebugBinaryPath), DebugBinaryPath);
-    loadSymbolsFromDWARF(*cast<ObjectFile>(DebugPath.getBinary()));
+    if (StringRef(DebugBinaryPath).ends_with_insensitive(".pdb")) {
+      loadSymbolsFromPDB(DebugBinaryPath);
+    } else {
+      OwningBinary<Binary> DebugPath =
+          unwrapOrError(createBinary(DebugBinaryPath), DebugBinaryPath);
+      loadSymbolsFromDWARF(*cast<ObjectFile>(DebugPath.getBinary()));
+    }
   } else {
     loadSymbolsFromDWARF(*cast<ObjectFile>(&ExeBinary));
   }
@@ -670,12 +696,21 @@ void ProfiledBinary::disassemble(const ObjectFile *Obj) {
   // sections are the candidates to dissassemble.
   std::map<SectionRef, SectionSymbolsTy> AllSymbols;
   StringRef FileName = Obj->getFileName();
-  for (const SymbolRef &Symbol : Obj->symbols()) {
-    const uint64_t Addr = unwrapOrError(Symbol.getAddress(), FileName);
-    const StringRef Name = unwrapOrError(Symbol.getName(), FileName);
-    section_iterator SecI = unwrapOrError(Symbol.getSection(), FileName);
-    if (SecI != Obj->section_end())
-      AllSymbols[*SecI].push_back(SymbolInfoTy(Addr, Name, ELF::STT_NOTYPE));
+  
+  // For COFF files with separate PDB files, populate symbols from PDB
+  // instead of relying on potentially stripped object file symbol table
+  if (IsCOFF && !DebugBinaryPath.empty() && 
+      StringRef(DebugBinaryPath).ends_with_insensitive(".pdb")) {
+    populateSymbolsFromPDB(Obj, AllSymbols);
+  } else {
+    // For other cases, use the traditional approach
+    for (const SymbolRef &Symbol : Obj->symbols()) {
+      const uint64_t Addr = unwrapOrError(Symbol.getAddress(), FileName);
+      const StringRef Name = unwrapOrError(Symbol.getName(), FileName);
+      section_iterator SecI = unwrapOrError(Symbol.getSection(), FileName);
+      if (SecI != Obj->section_end())
+        AllSymbols[*SecI].push_back(SymbolInfoTy(Addr, Name, ELF::STT_NOTYPE));
+    }
   }
 
   // Sort all the symbols. Use a stable sort to stabilize the output.
@@ -890,6 +925,290 @@ void ProfiledBinary::loadSymbolsFromDWARF(ObjectFile &Obj) {
   }
 }
 
+void ProfiledBinary::loadSymbolsFromPDB(const std::string &PDBPath) {
+  // Open the PDB file using the Native reader
+  Expected<pdb::InputFile> ExpectedFile = pdb::InputFile::open(PDBPath);
+  if (!ExpectedFile) {
+    exitWithError("Failed to open PDB file: " + toString(ExpectedFile.takeError()), PDBPath);
+  }
+
+  pdb::PDBFile &PdbFile = ExpectedFile->pdb();
+
+  // Get the DBI stream for module information
+  Expected<pdb::DbiStream &> ExpectedDbi = PdbFile.getPDBDbiStream();
+  if (!ExpectedDbi) {
+    exitWithError("Failed to get DBI stream: " + toString(ExpectedDbi.takeError()), PDBPath);
+  }
+  pdb::DbiStream &Dbi = *ExpectedDbi;
+
+  // Get section headers for segment:offset to address conversion
+  // Segment numbers are 1-based, so segment 1 = section 0
+  FixedStreamArray<object::coff_section> SectionHeaders = Dbi.getSectionHeaders();
+  outs() << "[PDB] Found " << SectionHeaders.size() << " section headers\n";
+  
+  // Helper lambda to convert segment:offset to virtual address
+  auto segmentOffsetToVA = [&](uint16_t Segment, uint32_t Offset) -> uint64_t {
+    if (Segment == 0 || Segment > SectionHeaders.size())
+      return 0;
+    // Segment is 1-based
+    const object::coff_section &Section = SectionHeaders[Segment - 1];
+    return getPreferredBaseAddress() + Section.VirtualAddress + Offset;
+  };
+
+  // Get the symbol stream
+  Expected<pdb::SymbolStream &> ExpectedSyms = PdbFile.getPDBSymbolStream();
+  if (!ExpectedSyms) {
+    exitWithError("Failed to get symbol stream: " + toString(ExpectedSyms.takeError()), PDBPath);
+  }
+  pdb::SymbolStream &SymStream = *ExpectedSyms;
+
+  // Build a map from address to public symbol name (mangled/linkage name)
+  // Public symbols have the decorated names we need for consistency with the symbolizer
+  std::map<uint64_t, std::string> AddrToLinkageName;
+
+  if (PdbFile.hasPDBPublicsStream()) {
+    Expected<pdb::PublicsStream &> ExpectedPublics = PdbFile.getPDBPublicsStream();
+    if (ExpectedPublics) {
+      pdb::PublicsStream &Publics = *ExpectedPublics;
+
+      // Iterate through the publics table
+      for (uint32_t Off : Publics.getPublicsTable()) {
+        codeview::CVSymbol Sym = SymStream.readRecord(Off);
+        if (Sym.kind() != codeview::SymbolKind::S_PUB32)
+          continue;
+
+        Expected<codeview::PublicSym32> ExpectedPubSym =
+            codeview::SymbolDeserializer::deserializeAs<codeview::PublicSym32>(Sym);
+        if (!ExpectedPubSym) {
+          consumeError(ExpectedPubSym.takeError());
+          continue;
+        }
+        const codeview::PublicSym32 &PubSym = *ExpectedPubSym;
+
+        // Convert segment:offset to virtual address using section headers
+        uint64_t Addr = segmentOffsetToVA(PubSym.Segment, PubSym.Offset);
+        if (Addr == 0)
+          continue;
+          
+        if (!PubSym.Name.empty()) {
+          AddrToLinkageName[Addr] = std::string(PubSym.Name);
+          outs() << "[PDB Public] Addr: " << format("0x%" PRIx64, Addr)
+                 << ", Segment: " << PubSym.Segment
+                 << ", Offset: " << format("0x%x", PubSym.Offset)
+                 << ", Name: " << PubSym.Name << "\n";
+        }
+      }
+    } else {
+      consumeError(ExpectedPublics.takeError());
+    }
+  }
+
+  outs() << "[PDB] Found " << AddrToLinkageName.size() << " public symbols\n";
+
+  /// For procedure symbols (S_GPROC32, S_LPROC32, etc.), return the linkage name
+  /// (mangled name) which is the second null-terminated string in the record.
+  /// For other symbols or if no linkage name exists, returns empty StringRef.
+  /// This is a local copy to avoid adding a new include for RecordName.h.
+  auto getSymbolLinkageName = [](codeview::CVSymbol Sym) -> StringRef {
+    // Procedure symbols may have a linkage name (second string) after the
+    // display name. This applies to:
+    // - S_GPROC32_ID/S_LPROC32_ID symbols (always have both names)
+    // - S_GPROC32/S_LPROC32 symbols that were translated from _ID variants
+    //   (the record data still contains both strings)
+    // - Original S_GPROC32/S_LPROC32 symbols (only have one name)
+    switch (Sym.kind()) {
+    case codeview::SymbolKind::S_GPROC32:
+    case codeview::SymbolKind::S_LPROC32:
+    case codeview::SymbolKind::S_GPROC32_ID:
+    case codeview::SymbolKind::S_LPROC32_ID:
+    case codeview::SymbolKind::S_LPROC32_DPC:
+    case codeview::SymbolKind::S_LPROC32_DPC_ID: {
+      // Proc symbols have: [fixed fields at offset 0-34][DisplayName\0][LinkageName\0]
+      // For non-_ID symbols, there may be only DisplayName\0
+      constexpr int NameOffset = 35;
+      ArrayRef<uint8_t> Data = Sym.content();
+      StringRef Content(reinterpret_cast<const char *>(Data.data()), Data.size());
+      if (Content.size() <= NameOffset)
+        return StringRef();
+
+      StringRef StringData = Content.drop_front(NameOffset);
+      // Skip past the display name (first null-terminated string)
+      size_t FirstNull = StringData.find('\0');
+      if (FirstNull == StringRef::npos)
+        return StringRef();
+
+      // Check if there's anything after the first null terminator
+      if (FirstNull + 1 >= StringData.size())
+        return StringRef();
+
+      // Linkage name starts after the null terminator of display name
+      StringRef LinkageName = StringData.drop_front(FirstNull + 1);
+      StringRef Result = LinkageName.split('\0').first;
+
+      return Result;
+    }
+    default:
+      return StringRef();
+    }
+  };
+
+  // Iterate through all modules to find function symbols (S_GPROC32, S_LPROC32)
+  const pdb::DbiModuleList &Modules = Dbi.modules();
+  outs() << "[PDB] Scanning " << Modules.getModuleCount() << " modules for function symbols\n";
+  for (uint32_t Modi = 0; Modi < Modules.getModuleCount(); ++Modi) {
+    Expected<pdb::ModuleDebugStreamRef> ExpectedModS =
+        pdb::getModuleDebugStream(PdbFile, Modi);
+    if (!ExpectedModS) {
+      consumeError(ExpectedModS.takeError());
+      continue;
+    }
+
+    pdb::ModuleDebugStreamRef &ModS = *ExpectedModS;
+    const codeview::CVSymbolArray &SymbolArray = ModS.getSymbolArray();
+
+    for (auto I = SymbolArray.begin(), E = SymbolArray.end(); I != E; ++I) {
+      if (I->kind() != codeview::SymbolKind::S_LPROC32 &&
+          I->kind() != codeview::SymbolKind::S_GPROC32 &&
+          I->kind() != codeview::SymbolKind::S_LPROC32_ID &&
+          I->kind() != codeview::SymbolKind::S_GPROC32_ID)
+        continue;
+
+      Expected<codeview::ProcSym> ExpectedProc =
+          codeview::SymbolDeserializer::deserializeAs<codeview::ProcSym>(*I);
+      if (!ExpectedProc) {
+        consumeError(ExpectedProc.takeError());
+        continue;
+      }
+      const codeview::ProcSym &Proc = *ExpectedProc;
+
+      if (Proc.CodeSize == 0)
+        continue;
+
+      // Calculate actual addresses using segment:offset conversion
+      uint64_t StartAddress = segmentOffsetToVA(Proc.Segment, Proc.CodeOffset);
+      if (StartAddress == 0)
+        continue;
+      uint64_t EndAddress = StartAddress + Proc.CodeSize;
+
+      if (EndAddress <= StartAddress ||
+          StartAddress < getPreferredBaseAddress())
+        continue;
+
+      // Prefer the linkage name (mangled) from public symbols if available,
+      // otherwise get it directly from the ProcSym record, then fall back to display name
+      std::string funcName;
+      auto It = AddrToLinkageName.find(StartAddress);
+      if (It != AddrToLinkageName.end()) {
+        funcName = It->second;
+        outs() << "[PDB Func] Addr: " << format("0x%" PRIx64, StartAddress)
+               << " - " << format("0x%" PRIx64, EndAddress)
+               << ", Size: " << Proc.CodeSize
+               << ", ProcName: " << Proc.Name
+               << ", LinkageName: " << funcName << "\n";
+      } else {
+        // Get the linkage name directly from the ProcSym record.
+        // The linkage name (mangled name) is stored as the second null-terminated
+        // string in the symbol record, after the display name.
+        StringRef LinkageName = getSymbolLinkageName(*I);
+        if (!LinkageName.empty()) {
+          funcName = std::string(LinkageName);
+          outs() << "[PDB Func] Addr: " << format("0x%" PRIx64, StartAddress)
+                 << " - " << format("0x%" PRIx64, EndAddress)
+                 << ", Size: " << Proc.CodeSize
+                 << ", ProcName: " << Proc.Name
+                 << ", LinkageName (from ProcSym): " << funcName << "\n";
+        } else {
+          funcName = std::string(Proc.Name);
+          if (funcName.empty())
+            continue;
+          outs() << "[PDB Func] Addr: " << format("0x%" PRIx64, StartAddress)
+                 << " - " << format("0x%" PRIx64, EndAddress)
+                 << ", Size: " << Proc.CodeSize
+                 << ", Name: " << funcName << " (no linkage name)\n";
+        }
+      }
+
+      // Create or find the BinaryFunction
+      auto Ret = BinaryFunctions.emplace(funcName, BinaryFunction());
+      auto &Func = Ret.first->second;
+      if (Ret.second) {
+        Func.FuncName = Ret.first->first;
+      }
+
+      // Add the range to the function
+      Func.Ranges.emplace_back(StartAddress, EndAddress);
+
+      // Add to StartAddrToFuncRangeMap
+      auto R = StartAddrToFuncRangeMap.emplace(StartAddress, FuncRange());
+      if (R.second) {
+        FuncRange &FRange = R.first->second;
+        FRange.Func = &Func;
+        FRange.StartAddress = StartAddress;
+        FRange.EndAddress = EndAddress;
+        FRange.IsFuncEntry = true;
+      } else {
+        AddrsWithMultipleSymbols.insert(StartAddress);
+        if (ShowDetailedWarning) {
+          WithColor::warning()
+              << "Duplicated symbol start address at "
+              << format("%8" PRIx64, StartAddress) << " "
+              << R.first->second.getFuncName() << " and " << funcName << "\n";
+        }
+      }
+
+      // Skip to the end of this function's scope
+      I = SymbolArray.at(Proc.End);
+    }
+  }
+
+  if (BinaryFunctions.empty()) {
+    WithColor::warning() << "Loading of PDB info completed, but no binary "
+                            "functions have been retrieved. Check if the PDB file matches the binary.\n";
+  } else {
+    WithColor::note() << "Successfully loaded " << BinaryFunctions.size() 
+                      << " functions from PDB file.\n";
+  }
+
+  // Populate the hash binary function map for MD5 function name lookup
+  for (auto &BinaryFunction : BinaryFunctions) {
+    HashBinaryFunctions[MD5Hash(StringRef(BinaryFunction.first))] =
+        &BinaryFunction.second;
+  }
+
+  if (!AddrsWithMultipleSymbols.empty()) {
+    WithColor::warning() << "Found " << AddrsWithMultipleSymbols.size()
+                         << " start addresses with multiple symbols\n";
+    AddrsWithMultipleSymbols.clear();
+  }
+}
+
+void ProfiledBinary::populateSymbolsFromPDB(const ObjectFile *Obj,
+                                            std::map<SectionRef, SectionSymbolsTy> &AllSymbols) {
+  // Use the already-populated StartAddrToFuncRangeMap from loadSymbolsFromPDB()
+  // instead of re-reading the PDB. This mirrors the ELF approach where DWARF
+  // populates the internal structures and a separate source (symbol table)
+  // provides disassembly boundaries.
+  for (auto &Entry : StartAddrToFuncRangeMap) {
+    uint64_t StartAddr = Entry.first;
+    FuncRange &FRange = Entry.second;
+    
+    // Find which section this address belongs to
+    for (section_iterator SI = Obj->section_begin(), SE = Obj->section_end(); 
+         SI != SE; ++SI) {
+      const SectionRef &Section = *SI;
+      uint64_t SectionStart = Section.getAddress();
+      uint64_t SectionEnd = SectionStart + Section.getSize();
+      
+      // Check if the symbol address falls within this section
+      if (StartAddr >= SectionStart && StartAddr < SectionEnd) {
+        AllSymbols[Section].push_back(
+            SymbolInfoTy(StartAddr, FRange.getFuncName(), 0 /* Type */));
+        break;
+      }
+    }
+  }
+}
+
 void ProfiledBinary::populateSymbolListFromDWARF(
     ProfileSymbolList &SymbolList) {
   for (auto &I : StartAddrToFuncRangeMap)
@@ -905,6 +1224,23 @@ symbolize::LLVMSymbolizer::Options ProfiledBinary::getSymbolizerOpts() const {
   SymbolizerOpts.UseSymbolTable = false;
   SymbolizerOpts.RelativeAddresses = false;
   SymbolizerOpts.DWPName = DWPPath;
+  
+  if (!DebugBinaryPath.empty() && 
+      StringRef(DebugBinaryPath).ends_with_insensitive(".pdb")) {
+    SymbolizerOpts.UseDIA = false;
+    
+    // Add the directory containing the PDB to the debug search paths
+    std::string PDBDir = DebugBinaryPath;
+    size_t LastSlash = PDBDir.find_last_of("/\\");
+    if (LastSlash != std::string::npos) {
+      PDBDir = PDBDir.substr(0, LastSlash);
+      SymbolizerOpts.DebugFileDirectory.push_back(PDBDir);
+    }
+
+    // Also try to help the symbolizer by providing hints about where to find debug info
+    SymbolizerOpts.DsymHints.push_back(DebugBinaryPath);
+  }
+
   return SymbolizerOpts;
 }
 
@@ -920,18 +1256,32 @@ SampleContextFrameVector ProfiledBinary::symbolize(const InstructionPointer &IP,
       SymbolizerPath);
 
   SampleContextFrameVector CallStack;
-  for (int32_t I = InlineStack.getNumberOfFrames() - 1; I >= 0; I--) {
+  int NumFrames = InlineStack.getNumberOfFrames();
+
+  // Debug: Print function names returned by symbolizer
+  llvm::outs() << "[Symbolize] Address: " << format("0x%" PRIx64, IP.Address)
+               << ", NumFrames: " << NumFrames << "\n";
+  for (int32_t I = 0; I < NumFrames; I++) {
+    const auto &Frame = InlineStack.getFrame(I);
+    llvm::outs() << "  Frame[" << I << "]: " << Frame.FunctionName
+                 << " (Line: " << Frame.Line << ", StartLine: " << Frame.StartLine
+                 << ", Discriminator: " << Frame.Discriminator << ")\n";
+  }
+
+  for (int32_t I = NumFrames - 1; I >= 0; I--) {
     const auto &CallerFrame = InlineStack.getFrame(I);
     if (CallerFrame.FunctionName.empty() ||
         (CallerFrame.FunctionName == "<invalid>"))
       break;
 
     StringRef FunctionName(CallerFrame.FunctionName);
+
     if (UseCanonicalFnName)
       FunctionName = FunctionSamples::getCanonicalFnName(FunctionName);
 
     uint32_t Discriminator = CallerFrame.Discriminator;
     uint32_t LineOffset = (CallerFrame.Line - CallerFrame.StartLine) & 0xffff;
+
     if (UseProbeDiscriminator) {
       LineOffset =
           PseudoProbeDwarfDiscriminator::extractProbeIndex(Discriminator);

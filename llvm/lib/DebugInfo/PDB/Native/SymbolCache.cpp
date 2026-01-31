@@ -37,6 +37,7 @@
 #include "llvm/DebugInfo/PDB/Native/TpiStream.h"
 #include "llvm/DebugInfo/PDB/PDBSymbol.h"
 #include "llvm/DebugInfo/PDB/PDBSymbolCompiland.h"
+#include "llvm/Support/raw_ostream.h"
 
 using namespace llvm;
 using namespace llvm::codeview;
@@ -310,6 +311,53 @@ SymIndexId SymbolCache::getOrCreateInlineSymbol(InlineSiteSym Sym,
   return Id;
 }
 
+/// For procedure symbols (S_GPROC32, S_LPROC32, etc.), return the linkage name
+/// (mangled name) which is the second null-terminated string in the record.
+/// For other symbols or if no linkage name exists, falls back to getSymbolName.
+/// This is a local copy to avoid adding a new include for RecordName.h.
+static StringRef getSymbolLinkageName(CVSymbol Sym) {
+  // Procedure symbols may have a linkage name (second string) after the
+  // display name. This applies to:
+  // - S_GPROC32_ID/S_LPROC32_ID symbols (always have both names)
+  // - S_GPROC32/S_LPROC32 symbols that were translated from _ID variants
+  //   (the record data still contains both strings)
+  // - Original S_GPROC32/S_LPROC32 symbols (only have one name)
+  switch (Sym.kind()) {
+  case SymbolKind::S_GPROC32:
+  case SymbolKind::S_LPROC32:
+  case SymbolKind::S_GPROC32_ID:
+  case SymbolKind::S_LPROC32_ID:
+  case SymbolKind::S_LPROC32_DPC:
+  case SymbolKind::S_LPROC32_DPC_ID: {
+    // Proc symbols have: [fixed fields at offset 0-34][DisplayName\0][LinkageName\0]
+    // For non-_ID symbols, there may be only DisplayName\0
+    constexpr int NameOffset = 35;
+    ArrayRef<uint8_t> Data = Sym.content();
+    StringRef Content(reinterpret_cast<const char *>(Data.data()), Data.size());
+    if (Content.size() <= NameOffset)
+      return StringRef();
+
+    StringRef StringData = Content.drop_front(NameOffset);
+    // Skip past the display name (first null-terminated string)
+    size_t FirstNull = StringData.find('\0');
+    if (FirstNull == StringRef::npos)
+      return StringRef();
+
+    // Check if there's anything after the first null terminator
+    if (FirstNull + 1 >= StringData.size())
+      return StringRef();
+
+    // Linkage name starts after the null terminator of display name
+    StringRef LinkageName = StringData.drop_front(FirstNull + 1);
+    StringRef Result = LinkageName.split('\0').first;
+
+    return Result;
+  }
+  default:
+    return StringRef();
+  }
+}
+
 std::unique_ptr<PDBSymbol>
 SymbolCache::findSymbolBySectOffset(uint32_t Sect, uint32_t Offset,
                                     PDB_SymType Type) {
@@ -368,6 +416,21 @@ SymbolCache::findFunctionSymbolBySectOffset(uint32_t Sect, uint32_t Offset) {
       auto Found = AddressToSymbolId.find({PS.Segment, PS.CodeOffset});
       if (Found != AddressToSymbolId.end())
         return getSymbolById(Found->second);
+
+      // Get the linkage name directly from the ProcSym record.
+      // The linkage name (mangled name) is stored as the second null-terminated
+      // string in the symbol record, after the display name.
+      StringRef LinkageName = getSymbolLinkageName(*I);
+
+      // If we found a linkage name, replace the name in the ProcSym.
+      if (!LinkageName.empty()) {
+        llvm::outs() << "Found linkage name '" << LinkageName
+                     << "' for symbol '" << PS.Name << "'\n";
+        PS.Name = LinkageName;
+      } else {
+        llvm::outs() << "No linkage name found for symbol '" << PS.Name
+                     << "'\n";
+      }
 
       // Otherwise, create a new symbol.
       SymIndexId Id = createSymbol<NativeFunctionSymbol>(PS, I.offset());

@@ -249,7 +249,19 @@ NativeSession::findSymbolByAddress(uint64_t Address, PDB_SymType Type) {
   uint32_t Section;
   uint32_t Offset;
   addressForVA(Address, Section, Offset);
-  return findSymbolBySectOffset(Section, Offset, Type);
+  auto Result = findSymbolBySectOffset(Section, Offset, Type);
+
+  // Debug: Print Native session symbol lookup
+  llvm::outs() << "[NativeSession::findSymbolByAddress] Address: 0x" 
+               << llvm::format_hex_no_prefix(Address, 16)
+               << ", Type: " << static_cast<int>(Type)
+               << ", Found: " << (Result ? "Yes" : "No");
+  if (Result) {
+    llvm::outs() << ", Name: " << Result->getRawSymbol().getName();
+  }
+  llvm::outs() << "\n";
+
+  return Result;
 }
 
 std::unique_ptr<PDBSymbol> NativeSession::findSymbolByRVA(uint32_t RVA,
