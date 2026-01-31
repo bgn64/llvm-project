@@ -129,7 +129,11 @@ private:
   /// The MCSubtargetInfo for this target.
   const MCSubtargetInfo *MSTI = nullptr;
 
+  /// CodeView context for standard debug sections (.debug$S, .debug$T)
   std::unique_ptr<CodeViewContext> CVContext;
+
+  /// CodeView context for PSB sections (.psb$S, .psb$T)
+  std::unique_ptr<CodeViewContext> PSBContext;
 
   /// Allocator object used for creating machine code objects.
   ///
@@ -419,7 +423,10 @@ public:
 
   const MCTargetOptions *getTargetOptions() const { return TargetOptions; }
 
-  LLVM_ABI CodeViewContext &getCVContext();
+  /// Get CodeView context for standard debug sections or PSB sections.
+  /// \param IsPSB If true, returns the PSB context; otherwise returns the
+  ///              standard CodeView context.
+  LLVM_ABI CodeViewContext &getCVContext(bool IsPSB = false);
 
   void setUseNamesOnTempLabels(bool Value) { UseNamesOnTempLabels = Value; }
 

@@ -92,6 +92,8 @@ def order   : P<"order", "Put functions in order">;
 def out     : P<"out", "Path to file to write output">;
 def natvis : P<"natvis", "Path to natvis file to embed in the PDB">;
 def pdb : P<"pdb", "PDB file path">;
+defm enablepdb : B<"enablepdb", "Enable PDB file creation", "Disable PDB file creation">;
+defm enablepsb : B<"enablepsb", "Enable PSB file creation", "Disable PSB file creation">;
 def pdbaltpath : P<"pdbaltpath", "PDB file path to embed in the image">;
 def pdbpagesize : P<"pdbpagesize", "PDB page size">;
 def pdbstripped : P<"pdbstripped", "Stripped PDB file path">;

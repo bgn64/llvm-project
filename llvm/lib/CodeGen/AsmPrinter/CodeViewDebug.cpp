@@ -71,6 +71,8 @@
 #include <cstddef>
 #include <limits>
 
+#include "llvm/Support/raw_ostream.h"
+
 using namespace llvm;
 using namespace llvm::codeview;
 
@@ -132,8 +134,9 @@ static CPUType mapArchToCVCPUType(Triple::ArchType Type) {
   }
 }
 
-CodeViewDebug::CodeViewDebug(AsmPrinter *AP)
-    : DebugHandlerBase(AP), OS(*Asm->OutStreamer), TypeTable(Allocator) {}
+CodeViewDebug::CodeViewDebug(AsmPrinter *AP, bool EmitPSBSections)
+    : DebugHandlerBase(AP), OS(*Asm->OutStreamer), TypeTable(Allocator),
+      EmitPSBSections(EmitPSBSections) {}
 
 StringRef CodeViewDebug::getFullFilepath(const DIFile *File) {
   std::string &Filepath = FileToFilepathMap[File];
@@ -226,7 +229,8 @@ unsigned CodeViewDebug::maybeRecordFile(const DIFile *F) {
       }
     }
     bool Success = OS.emitCVFileDirective(NextId, FullPath, ChecksumAsBytes,
-                                          static_cast<unsigned>(CSKind));
+                                          static_cast<unsigned>(CSKind),
+                                          EmitPSBSections);
     (void)Success;
     assert(Success && ".cv_file directive failed");
   }
@@ -248,7 +252,7 @@ CodeViewDebug::getInlineSite(const DILocation *InlinedAt,
     Site->SiteFuncId = NextFuncId++;
     OS.emitCVInlineSiteIdDirective(
         Site->SiteFuncId, ParentFuncId, maybeRecordFile(InlinedAt->getFile()),
-        InlinedAt->getLine(), InlinedAt->getColumn(), SMLoc());
+        InlinedAt->getLine(), InlinedAt->getColumn(), SMLoc(), EmitPSBSections);
     Site->Inlinee = Inlinee;
     InlinedSubprograms.insert(Inlinee);
     auto InlineeIdx = getFuncIdForSubprogram(Inlinee);
@@ -560,13 +564,18 @@ void CodeViewDebug::maybeRecordLocation(const DebugLoc &DL,
 
   OS.emitCVLocDirective(FuncId, FileId, DL.getLine(), DL.getCol(),
                         /*PrologueEnd=*/false, /*IsStmt=*/false,
-                        DL->getFilename(), SMLoc());
+                        DL->getFilename(), SMLoc(), EmitPSBSections);
 }
 
 void CodeViewDebug::emitCodeViewMagicVersion() {
   OS.emitValueToAlignment(Align(4));
-  OS.AddComment("Debug section magic");
-  OS.emitInt32(COFF::DEBUG_SECTION_MAGIC);
+  if (EmitPSBSections) {
+    OS.AddComment("PSB section magic");
+    OS.emitInt32(COFF::PSB_SECTION_MAGIC);
+  } else {
+    OS.AddComment("Debug section magic");
+    OS.emitInt32(COFF::DEBUG_SECTION_MAGIC);
+  }
 }
 
 static SourceLanguage MapDWLangToCVLang(unsigned DWLang) {
@@ -613,8 +622,13 @@ static SourceLanguage MapDWLangToCVLang(unsigned DWLang) {
 }
 
 void CodeViewDebug::beginModule(Module *M) {
+  llvm::outs() << "[CodeViewDebug] beginModule called, EmitPSBSections=" << EmitPSBSections << "\n";
   // If COFF debug section is not available, skip any debug info related stuff.
-  if (!Asm->getObjFileLowering().getCOFFDebugSymbolsSection()) {
+  // Check for the appropriate section based on EmitPSBSections flag.
+  MCSection *DebugSection = EmitPSBSections
+      ? Asm->getObjFileLowering().getCOFFPSBSymbolsSection()
+      : Asm->getObjFileLowering().getCOFFDebugSymbolsSection();
+  if (!DebugSection) {
     Asm = nullptr;
     return;
   }
@@ -650,6 +664,7 @@ void CodeViewDebug::beginModule(Module *M) {
 }
 
 void CodeViewDebug::endModule() {
+  llvm::outs() << "[CodeViewDebug] endModule called, EmitPSBSections=" << EmitPSBSections << "\n";
   if (!CompilerInfoAsm)
     return;
 
@@ -703,11 +718,13 @@ void CodeViewDebug::endModule() {
 
   // This subsection holds a file index to offset in string table table.
   OS.AddComment("File index to string table offset subsection");
-  OS.emitCVFileChecksumsDirective();
+  llvm::outs() << "[CodeViewDebug] emitCVFileChecksumsDirective called with IsPSB=" << EmitPSBSections << "\n";
+  OS.emitCVFileChecksumsDirective(EmitPSBSections);
 
   // This subsection holds the string table.
   OS.AddComment("String table");
-  OS.emitCVStringTableDirective();
+  llvm::outs() << "[CodeViewDebug] emitCVStringTableDirective called with IsPSB=" << EmitPSBSections << "\n";
+  OS.emitCVStringTableDirective(EmitPSBSections);
 
   // Emit S_BUILDINFO, which points to LF_BUILDINFO. Put this in its own symbol
   // subsection in the generic .debug$S section at the end. There is no
@@ -741,8 +758,11 @@ void CodeViewDebug::emitTypeInformation() {
   if (TypeTable.empty())
     return;
 
-  // Start the .debug$T or .debug$P section with 0x4.
-  OS.switchSection(Asm->getObjFileLowering().getCOFFDebugTypesSection());
+  // Start the .debug$T/.debug$P or .psb$T section with the magic number.
+  MCSection *TypesSection = EmitPSBSections
+      ? Asm->getObjFileLowering().getCOFFPSBTypesSection()
+      : Asm->getObjFileLowering().getCOFFDebugTypesSection();
+  OS.switchSection(TypesSection);
   emitCodeViewMagicVersion();
 
   TypeTableCollection Table(TypeTable.records());
@@ -773,13 +793,17 @@ void CodeViewDebug::emitTypeGlobalHashes() {
   if (TypeTable.empty())
     return;
 
-  // Start the .debug$H section with the version and hash algorithm, currently
-  // hardcoded to version 0, SHA1.
-  OS.switchSection(Asm->getObjFileLowering().getCOFFGlobalTypeHashesSection());
+  // Start the .debug$H or .psb$H section with the version and hash algorithm,
+  // currently hardcoded to version 0, BLAKE3.
+  MCSection *HashesSection = EmitPSBSections
+      ? Asm->getObjFileLowering().getCOFFPSBGlobalTypeHashesSection()
+      : Asm->getObjFileLowering().getCOFFGlobalTypeHashesSection();
+  OS.switchSection(HashesSection);
 
   OS.emitValueToAlignment(Align(4));
   OS.AddComment("Magic");
-  OS.emitInt32(COFF::DEBUG_HASHES_SECTION_MAGIC);
+  OS.emitInt32(EmitPSBSections ? COFF::PSB_HASHES_SECTION_MAGIC
+                               : COFF::DEBUG_HASHES_SECTION_MAGIC);
   OS.AddComment("Section Version");
   OS.emitInt16(0);
   OS.AddComment("Hash Algorithm");
@@ -1000,7 +1024,7 @@ void CodeViewDebug::emitInlineeLinesSubsection() {
     OS.AddComment("Type index of inlined function");
     OS.emitInt32(InlineeIdx.getIndex());
     OS.AddComment("Offset into filechecksum table");
-    OS.emitCVFileChecksumOffsetDirective(FileId);
+    OS.emitCVFileChecksumOffsetDirective(FileId, EmitPSBSections);
     OS.AddComment("Starting line number");
     OS.emitInt32(SP->getLine());
   }
@@ -1028,7 +1052,7 @@ void CodeViewDebug::emitInlinedCallSite(const FunctionInfo &FI,
   unsigned StartLineNum = Site.Inlinee->getLine();
 
   OS.emitCVInlineLinetableDirective(Site.SiteFuncId, FileId, StartLineNum,
-                                    FI.Begin, FI.End);
+                                    FI.Begin, FI.End, EmitPSBSections);
 
   endSymbolRecord(InlineEnd);
 
@@ -1054,8 +1078,11 @@ void CodeViewDebug::switchToDebugSectionForSymbol(const MCSymbol *GVSym) {
       GVSym ? dyn_cast<MCSectionCOFF>(&GVSym->getSection()) : nullptr;
   const MCSymbol *KeySym = GVSec ? GVSec->getCOMDATSymbol() : nullptr;
 
-  MCSectionCOFF *DebugSec = cast<MCSectionCOFF>(
-      CompilerInfoAsm->getObjFileLowering().getCOFFDebugSymbolsSection());
+  // Use PSB or debug section based on EmitPSBSections flag.
+  auto *DebugSec = static_cast<MCSectionCOFF *>(
+      EmitPSBSections
+          ? CompilerInfoAsm->getObjFileLowering().getCOFFPSBSymbolsSection()
+          : CompilerInfoAsm->getObjFileLowering().getCOFFDebugSymbolsSection());
   DebugSec = OS.getContext().getAssociativeCOFFSection(DebugSec, KeySym);
 
   OS.switchSection(DebugSec);
@@ -1182,7 +1209,21 @@ void CodeViewDebug::emitDebugInfoForFunction(const Function *GV,
     // Emit the function display name as a null-terminated string.
     OS.AddComment("Function name");
     // Truncate the name so we won't overflow the record length field.
-    emitNullTerminatedSymbolName(OS, FuncName);
+    if (EmitPSBSections) {
+      // When emitting PSB sections, we emit two strings (display name +
+      // linkage name), so use a larger MaxFixedRecordLength to leave room for
+      // both. Each string gets roughly half the available space:
+      // (0xFF00 - 39) / 2 ≈ 0x7F00.
+      emitNullTerminatedSymbolName(OS, FuncName, 0x7F00);
+      // Emit the linkage name (mangled name) as a second null-terminated
+      // string. This allows tools like LLD to extract the mangled name for PSB
+      // generation without needing to look up relocations.
+      OS.AddComment("Linkage name");
+      emitNullTerminatedSymbolName(
+          OS, GlobalValue::dropLLVMManglingEscape(GV->getName()), 0x7F00);
+    } else {
+      emitNullTerminatedSymbolName(OS, FuncName);
+    }
     endSymbolRecord(ProcRecordEnd);
 
     MCSymbol *FrameProcEnd = beginSymbolRecord(SymbolKind::S_FRAMEPROC);
@@ -1263,7 +1304,7 @@ void CodeViewDebug::emitDebugInfoForFunction(const Function *GV,
   endCVSubsection(SymbolsEnd);
 
   // We have an assembler directive that takes care of the whole line table.
-  OS.emitCVLinetableDirective(FI.FuncId, Fn, FI.End);
+  OS.emitCVLinetableDirective(FI.FuncId, Fn, FI.End, EmitPSBSections);
 }
 
 CodeViewDebug::LocalVarDef
@@ -1570,7 +1611,7 @@ void CodeViewDebug::beginFunctionImpl(const MachineFunction *MF) {
   // FIXME: Set GuardCfg when it is implemented.
   CurFn->FrameProcOpts = FPO;
 
-  OS.emitCVFuncIdDirective(CurFn->FuncId);
+  OS.emitCVFuncIdDirective(CurFn->FuncId, EmitPSBSections);
 
   // Find the end of the function prolog.  First known non-DBG_VALUE and
   // non-frame setup location marks the beginning of the function body.
@@ -2910,7 +2951,7 @@ void CodeViewDebug::emitLocalVariable(const FunctionInfo &FI,
                : (EncFP == FI.EncodedLocalFramePtrReg))) {
         DefRangeFramePointerRelHeader DRHdr;
         DRHdr.Offset = Offset;
-        OS.emitCVDefRangeDirective(Ranges, DRHdr);
+        OS.emitCVDefRangeDirective(Ranges, DRHdr, EmitPSBSections);
       } else {
         uint16_t RegRelFlags = 0;
         if (DefRange.IsSubfield) {
@@ -2922,7 +2963,7 @@ void CodeViewDebug::emitLocalVariable(const FunctionInfo &FI,
         DRHdr.Register = Reg;
         DRHdr.Flags = RegRelFlags;
         DRHdr.BasePointerOffset = Offset;
-        OS.emitCVDefRangeDirective(Ranges, DRHdr);
+        OS.emitCVDefRangeDirective(Ranges, DRHdr, EmitPSBSections);
       }
     } else {
       assert(DefRange.DataOffset == 0 && "unexpected offset into register");
@@ -2931,12 +2972,12 @@ void CodeViewDebug::emitLocalVariable(const FunctionInfo &FI,
         DRHdr.Register = DefRange.CVRegister;
         DRHdr.MayHaveNoName = 0;
         DRHdr.OffsetInParent = DefRange.StructOffset;
-        OS.emitCVDefRangeDirective(Ranges, DRHdr);
+        OS.emitCVDefRangeDirective(Ranges, DRHdr, EmitPSBSections);
       } else {
         DefRangeRegisterHeader DRHdr;
         DRHdr.Register = DefRange.CVRegister;
         DRHdr.MayHaveNoName = 0;
-        OS.emitCVDefRangeDirective(Ranges, DRHdr);
+        OS.emitCVDefRangeDirective(Ranges, DRHdr, EmitPSBSections);
       }
     }
   }

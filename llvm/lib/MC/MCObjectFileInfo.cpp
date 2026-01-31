@@ -654,6 +654,20 @@ void MCObjectFileInfo::initCOFFMCObjectFileInfo(const Triple &T) {
                                        COFF::IMAGE_SCN_CNT_INITIALIZED_DATA |
                                        COFF::IMAGE_SCN_MEM_READ));
 
+  // PSB (Portable Symbols for Binaries) sections - alternate CodeView sections
+  COFFPSBSymbolsSection =
+      Ctx->getCOFFSection(".psb$S", (COFF::IMAGE_SCN_MEM_DISCARDABLE |
+                                     COFF::IMAGE_SCN_CNT_INITIALIZED_DATA |
+                                     COFF::IMAGE_SCN_MEM_READ));
+  COFFPSBTypesSection =
+      Ctx->getCOFFSection(".psb$T", (COFF::IMAGE_SCN_MEM_DISCARDABLE |
+                                     COFF::IMAGE_SCN_CNT_INITIALIZED_DATA |
+                                     COFF::IMAGE_SCN_MEM_READ));
+  COFFPSBGlobalTypeHashesSection =
+      Ctx->getCOFFSection(".psb$H", (COFF::IMAGE_SCN_MEM_DISCARDABLE |
+                                     COFF::IMAGE_SCN_CNT_INITIALIZED_DATA |
+                                     COFF::IMAGE_SCN_MEM_READ));
+
   DwarfAbbrevSection = Ctx->getCOFFSection(
       ".debug_abbrev", COFF::IMAGE_SCN_MEM_DISCARDABLE |
                            COFF::IMAGE_SCN_CNT_INITIALIZED_DATA |

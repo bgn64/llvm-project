@@ -275,37 +275,40 @@ MCDwarfFrameInfo *MCStreamer::getCurrentDwarfFrameInfo() {
 
 bool MCStreamer::emitCVFileDirective(unsigned FileNo, StringRef Filename,
                                      ArrayRef<uint8_t> Checksum,
-                                     unsigned ChecksumKind) {
-  return getContext().getCVContext().addFile(*this, FileNo, Filename, Checksum,
-                                             ChecksumKind);
+                                     unsigned ChecksumKind, bool IsPSB) {
+  llvm::outs() << "[MCStreamer] emitCVFileDirective called, IsPSB=" << IsPSB 
+               << ", FileNo=" << FileNo << ", Filename=" << Filename << "\n";
+  return getContext().getCVContext(IsPSB).addFile(*this, FileNo, Filename,
+                                                  Checksum, ChecksumKind);
 }
 
-bool MCStreamer::emitCVFuncIdDirective(unsigned FunctionId) {
-  return getContext().getCVContext().recordFunctionId(FunctionId);
+bool MCStreamer::emitCVFuncIdDirective(unsigned FunctionId, bool IsPSB) {
+  return getContext().getCVContext(IsPSB).recordFunctionId(FunctionId);
 }
 
 bool MCStreamer::emitCVInlineSiteIdDirective(unsigned FunctionId,
                                              unsigned IAFunc, unsigned IAFile,
                                              unsigned IALine, unsigned IACol,
-                                             SMLoc Loc) {
-  if (getContext().getCVContext().getCVFunctionInfo(IAFunc) == nullptr) {
+                                             SMLoc Loc, bool IsPSB) {
+  if (getContext().getCVContext(IsPSB).getCVFunctionInfo(IAFunc) == nullptr) {
     getContext().reportError(Loc, "parent function id not introduced by "
                                   ".cv_func_id or .cv_inline_site_id");
     return true;
   }
 
-  return getContext().getCVContext().recordInlinedCallSiteId(
+  return getContext().getCVContext(IsPSB).recordInlinedCallSiteId(
       FunctionId, IAFunc, IAFile, IALine, IACol);
 }
 
 void MCStreamer::emitCVLocDirective(unsigned FunctionId, unsigned FileNo,
                                     unsigned Line, unsigned Column,
                                     bool PrologueEnd, bool IsStmt,
-                                    StringRef FileName, SMLoc Loc) {}
+                                    StringRef FileName, SMLoc Loc,
+                                    bool IsPSB) {}
 
 bool MCStreamer::checkCVLocSection(unsigned FuncId, unsigned FileNo,
-                                   SMLoc Loc) {
-  CodeViewContext &CVC = getContext().getCVContext();
+                                   SMLoc Loc, bool IsPSB) {
+  CodeViewContext &CVC = getContext().getCVContext(IsPSB);
   MCCVFunctionInfo *FI = CVC.getCVFunctionInfo(FuncId);
   if (!FI) {
     getContext().reportError(
@@ -327,13 +330,15 @@ bool MCStreamer::checkCVLocSection(unsigned FuncId, unsigned FileNo,
 
 void MCStreamer::emitCVLinetableDirective(unsigned FunctionId,
                                           const MCSymbol *Begin,
-                                          const MCSymbol *End) {}
+                                          const MCSymbol *End,
+                                          bool IsPSB) {}
 
 void MCStreamer::emitCVInlineLinetableDirective(unsigned PrimaryFunctionId,
                                                 unsigned SourceFileId,
                                                 unsigned SourceLineNum,
                                                 const MCSymbol *FnStartSym,
-                                                const MCSymbol *FnEndSym) {}
+                                                const MCSymbol *FnEndSym,
+                                                bool IsPSB) {}
 
 /// Only call this on endian-specific types like ulittle16_t and little32_t, or
 /// structs composed of them.
@@ -349,40 +354,40 @@ static void copyBytesForDefRange(SmallString<20> &BytePrefix,
 
 void MCStreamer::emitCVDefRangeDirective(
     ArrayRef<std::pair<const MCSymbol *, const MCSymbol *>> Ranges,
-    StringRef FixedSizePortion) {}
+    StringRef FixedSizePortion, bool IsPSB) {}
 
 void MCStreamer::emitCVDefRangeDirective(
     ArrayRef<std::pair<const MCSymbol *, const MCSymbol *>> Ranges,
-    codeview::DefRangeRegisterRelHeader DRHdr) {
+    codeview::DefRangeRegisterRelHeader DRHdr, bool IsPSB) {
   SmallString<20> BytePrefix;
   copyBytesForDefRange(BytePrefix, codeview::S_DEFRANGE_REGISTER_REL, DRHdr);
-  emitCVDefRangeDirective(Ranges, BytePrefix);
+  emitCVDefRangeDirective(Ranges, BytePrefix, IsPSB);
 }
 
 void MCStreamer::emitCVDefRangeDirective(
     ArrayRef<std::pair<const MCSymbol *, const MCSymbol *>> Ranges,
-    codeview::DefRangeSubfieldRegisterHeader DRHdr) {
+    codeview::DefRangeSubfieldRegisterHeader DRHdr, bool IsPSB) {
   SmallString<20> BytePrefix;
   copyBytesForDefRange(BytePrefix, codeview::S_DEFRANGE_SUBFIELD_REGISTER,
                        DRHdr);
-  emitCVDefRangeDirective(Ranges, BytePrefix);
+  emitCVDefRangeDirective(Ranges, BytePrefix, IsPSB);
 }
 
 void MCStreamer::emitCVDefRangeDirective(
     ArrayRef<std::pair<const MCSymbol *, const MCSymbol *>> Ranges,
-    codeview::DefRangeRegisterHeader DRHdr) {
+    codeview::DefRangeRegisterHeader DRHdr, bool IsPSB) {
   SmallString<20> BytePrefix;
   copyBytesForDefRange(BytePrefix, codeview::S_DEFRANGE_REGISTER, DRHdr);
-  emitCVDefRangeDirective(Ranges, BytePrefix);
+  emitCVDefRangeDirective(Ranges, BytePrefix, IsPSB);
 }
 
 void MCStreamer::emitCVDefRangeDirective(
     ArrayRef<std::pair<const MCSymbol *, const MCSymbol *>> Ranges,
-    codeview::DefRangeFramePointerRelHeader DRHdr) {
+    codeview::DefRangeFramePointerRelHeader DRHdr, bool IsPSB) {
   SmallString<20> BytePrefix;
   copyBytesForDefRange(BytePrefix, codeview::S_DEFRANGE_FRAMEPOINTER_REL,
                        DRHdr);
-  emitCVDefRangeDirective(Ranges, BytePrefix);
+  emitCVDefRangeDirective(Ranges, BytePrefix, IsPSB);
 }
 
 void MCStreamer::emitEHSymAttributes(const MCSymbol *Symbol,

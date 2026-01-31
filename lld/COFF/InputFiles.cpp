@@ -961,13 +961,15 @@ ArrayRef<uint8_t> ObjFile::getDebugSection(StringRef secName) {
   return {};
 }
 
-// OBJ files systematically store critical information in a .debug$S stream,
-// even if the TU was compiled with no debug info. At least two records are
-// always there. S_OBJNAME stores a 32-bit signature, which is loaded into the
-// PCHSignature member. S_COMPILE3 stores compile-time cmd-line flags. This is
-// currently used to initialize the hotPatchable member.
+// OBJ files systematically store critical information in a .debug$S or .psb$S
+// stream, even if the TU was compiled with no debug info. At least two records
+// are always there. S_OBJNAME stores a 32-bit signature, which is loaded into
+// the PCHSignature member. S_COMPILE3 stores compile-time cmd-line flags. This
+// is currently used to initialize the hotPatchable member.
 void ObjFile::initializeFlags() {
   ArrayRef<uint8_t> data = getDebugSection(".debug$S");
+  if (data.empty())
+    data = getDebugSection(".psb$S");
   if (data.empty())
     return;
 
@@ -1023,11 +1025,17 @@ void ObjFile::initializeDependencies() {
 
   bool isPCH = false;
 
+  // Check for .debug$P or .psb$P (PCH) sections first, then .debug$T or .psb$T.
   ArrayRef<uint8_t> data = getDebugSection(".debug$P");
-  if (!data.empty())
+  if (data.empty())
+    data = getDebugSection(".psb$P");
+  if (!data.empty()) {
     isPCH = true;
-  else
+  } else {
     data = getDebugSection(".debug$T");
+    if (data.empty())
+      data = getDebugSection(".psb$T");
+  }
 
   // symbols but no types, make a plain, empty TpiSource anyway, because it
   // simplifies adding the symbols later.
@@ -1046,7 +1054,7 @@ void ObjFile::initializeDependencies() {
   if (firstType == types.end())
     return;
 
-  // Remember the .debug$T or .debug$P section.
+  // Remember the .debug$T/.psb$T or .debug$P/.psb$P section.
   debugTypes = data;
 
   // This object file is a PCH file that others will depend on.

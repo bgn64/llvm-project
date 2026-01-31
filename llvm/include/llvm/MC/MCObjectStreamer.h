@@ -151,20 +151,24 @@ public:
                                  const MCSymbol *Label, SMLoc Loc);
   void emitCVLocDirective(unsigned FunctionId, unsigned FileNo, unsigned Line,
                           unsigned Column, bool PrologueEnd, bool IsStmt,
-                          StringRef FileName, SMLoc Loc) override;
+                          StringRef FileName, SMLoc Loc,
+                          bool IsPSB = false) override;
   void emitCVLinetableDirective(unsigned FunctionId, const MCSymbol *Begin,
-                                const MCSymbol *End) override;
+                                const MCSymbol *End,
+                                bool IsPSB = false) override;
   void emitCVInlineLinetableDirective(unsigned PrimaryFunctionId,
                                       unsigned SourceFileId,
                                       unsigned SourceLineNum,
                                       const MCSymbol *FnStartSym,
-                                      const MCSymbol *FnEndSym) override;
+                                      const MCSymbol *FnEndSym,
+                                      bool IsPSB = false) override;
   void emitCVDefRangeDirective(
       ArrayRef<std::pair<const MCSymbol *, const MCSymbol *>> Ranges,
-      StringRef FixedSizePortion) override;
-  void emitCVStringTableDirective() override;
-  void emitCVFileChecksumsDirective() override;
-  void emitCVFileChecksumOffsetDirective(unsigned FileNo) override;
+      StringRef FixedSizePortion, bool IsPSB = false) override;
+  void emitCVStringTableDirective(bool IsPSB = false) override;
+  void emitCVFileChecksumsDirective(bool IsPSB = false) override;
+  void emitCVFileChecksumOffsetDirective(unsigned FileNo,
+                                         bool IsPSB = false) override;
   std::optional<std::pair<bool, std::string>>
   emitRelocDirective(const MCExpr &Offset, StringRef Name, const MCExpr *Expr,
                      SMLoc Loc, const MCSubtargetInfo &STI) override;

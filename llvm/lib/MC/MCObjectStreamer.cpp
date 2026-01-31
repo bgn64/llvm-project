@@ -530,55 +530,59 @@ void MCObjectStreamer::emitDwarfAdvanceFrameAddr(const MCSymbol *LastLabel,
 void MCObjectStreamer::emitCVLocDirective(unsigned FunctionId, unsigned FileNo,
                                           unsigned Line, unsigned Column,
                                           bool PrologueEnd, bool IsStmt,
-                                          StringRef FileName, SMLoc Loc) {
+                                          StringRef FileName, SMLoc Loc,
+                                          bool IsPSB) {
   // Validate the directive.
-  if (!checkCVLocSection(FunctionId, FileNo, Loc))
+  if (!checkCVLocSection(FunctionId, FileNo, Loc, IsPSB))
     return;
 
   // Emit a label at the current position and record it in the CodeViewContext.
   MCSymbol *LineSym = getContext().createTempSymbol();
   emitLabel(LineSym);
-  getContext().getCVContext().recordCVLoc(getContext(), LineSym, FunctionId,
-                                          FileNo, Line, Column, PrologueEnd,
-                                          IsStmt);
+  getContext().getCVContext(IsPSB).recordCVLoc(getContext(), LineSym,
+                                               FunctionId, FileNo, Line, Column,
+                                               PrologueEnd, IsStmt);
 }
 
 void MCObjectStreamer::emitCVLinetableDirective(unsigned FunctionId,
                                                 const MCSymbol *Begin,
-                                                const MCSymbol *End) {
-  getContext().getCVContext().emitLineTableForFunction(*this, FunctionId, Begin,
-                                                       End);
-  this->MCStreamer::emitCVLinetableDirective(FunctionId, Begin, End);
+                                                const MCSymbol *End,
+                                                bool IsPSB) {
+  getContext().getCVContext(IsPSB).emitLineTableForFunction(*this, FunctionId,
+                                                            Begin, End);
+  this->MCStreamer::emitCVLinetableDirective(FunctionId, Begin, End, IsPSB);
 }
 
 void MCObjectStreamer::emitCVInlineLinetableDirective(
     unsigned PrimaryFunctionId, unsigned SourceFileId, unsigned SourceLineNum,
-    const MCSymbol *FnStartSym, const MCSymbol *FnEndSym) {
-  getContext().getCVContext().emitInlineLineTableForFunction(
+    const MCSymbol *FnStartSym, const MCSymbol *FnEndSym, bool IsPSB) {
+  getContext().getCVContext(IsPSB).emitInlineLineTableForFunction(
       *this, PrimaryFunctionId, SourceFileId, SourceLineNum, FnStartSym,
       FnEndSym);
   this->MCStreamer::emitCVInlineLinetableDirective(
-      PrimaryFunctionId, SourceFileId, SourceLineNum, FnStartSym, FnEndSym);
+      PrimaryFunctionId, SourceFileId, SourceLineNum, FnStartSym, FnEndSym,
+      IsPSB);
 }
 
 void MCObjectStreamer::emitCVDefRangeDirective(
     ArrayRef<std::pair<const MCSymbol *, const MCSymbol *>> Ranges,
-    StringRef FixedSizePortion) {
-  getContext().getCVContext().emitDefRange(*this, Ranges, FixedSizePortion);
+    StringRef FixedSizePortion, bool IsPSB) {
+  getContext().getCVContext(IsPSB).emitDefRange(*this, Ranges, FixedSizePortion);
   // Attach labels that were pending before we created the defrange fragment to
   // the beginning of the new fragment.
-  this->MCStreamer::emitCVDefRangeDirective(Ranges, FixedSizePortion);
+  this->MCStreamer::emitCVDefRangeDirective(Ranges, FixedSizePortion, IsPSB);
 }
 
-void MCObjectStreamer::emitCVStringTableDirective() {
-  getContext().getCVContext().emitStringTable(*this);
+void MCObjectStreamer::emitCVStringTableDirective(bool IsPSB) {
+  getContext().getCVContext(IsPSB).emitStringTable(*this);
 }
-void MCObjectStreamer::emitCVFileChecksumsDirective() {
-  getContext().getCVContext().emitFileChecksums(*this);
+void MCObjectStreamer::emitCVFileChecksumsDirective(bool IsPSB) {
+  getContext().getCVContext(IsPSB).emitFileChecksums(*this);
 }
 
-void MCObjectStreamer::emitCVFileChecksumOffsetDirective(unsigned FileNo) {
-  getContext().getCVContext().emitFileChecksumOffset(*this, FileNo);
+void MCObjectStreamer::emitCVFileChecksumOffsetDirective(unsigned FileNo,
+                                                         bool IsPSB) {
+  getContext().getCVContext(IsPSB).emitFileChecksumOffset(*this, FileNo);
 }
 
 void MCObjectStreamer::emitBytes(StringRef Data) {

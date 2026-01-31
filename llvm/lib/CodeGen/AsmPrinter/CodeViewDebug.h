@@ -92,8 +92,12 @@ private:
   BumpPtrAllocator Allocator;
   codeview::GlobalTypeTableBuilder TypeTable;
 
-  /// Whether to emit type record hashes into .debug$H.
+  /// Whether to emit type record hashes into .debug$H or .psb$H.
   bool EmitDebugGlobalHashes = false;
+
+  /// Whether to emit PSB sections (.psb$S, .psb$T) instead of standard
+  /// CodeView debug sections (.debug$S, .debug$T).
+  bool EmitPSBSections = false;
 
   /// The codeview CPU type used by the translation unit.
   codeview::CPUType TheCPU;
@@ -520,7 +524,12 @@ protected:
   }
 
 public:
-  CodeViewDebug(AsmPrinter *AP);
+  /// Construct a CodeViewDebug instance.
+  /// \param AP The AsmPrinter to use for emission.
+  /// \param EmitPSBSections If true, emit PSB sections (.psb$S, .psb$T, .psb$H)
+  ///        with an alternate magic number instead of standard CodeView
+  ///        debug sections (.debug$S, .debug$T, .debug$H).
+  CodeViewDebug(AsmPrinter *AP, bool EmitPSBSections = false);
 
   void beginModule(Module *M) override;
 

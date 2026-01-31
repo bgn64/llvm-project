@@ -156,6 +156,7 @@ void MCContext::reset() {
   // ~CodeViewContext may destroy a MCFragment outside of sections and need to
   // be reset before FragmentAllocator.
   CVContext.reset();
+  PSBContext.reset();
 
   MCSubtargetAllocator.DestroyAll();
   InlineAsmUsedLabelNames.clear();
@@ -1094,9 +1095,18 @@ void MCContext::finalizeDwarfSections(MCStreamer &MCOS) {
       [&](MCSection *Sec) { return !MCOS.mayHaveInstructions(*Sec); });
 }
 
-CodeViewContext &MCContext::getCVContext() {
-  if (!CVContext)
+CodeViewContext &MCContext::getCVContext(bool IsPSB) {
+  if (IsPSB) {
+    if (!PSBContext) {
+      PSBContext.reset(new CodeViewContext(this));
+      llvm::outs() << "[MCContext] Created new PSBContext at " << (void*)PSBContext.get() << "\n";
+    }
+    return *PSBContext;
+  }
+  if (!CVContext) {
     CVContext.reset(new CodeViewContext(this));
+    llvm::outs() << "[MCContext] Created new CVContext at " << (void*)CVContext.get() << "\n";
+  }
   return *CVContext;
 }
 

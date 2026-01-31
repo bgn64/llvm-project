@@ -29,6 +29,7 @@
 #include "llvm/Support/FileOutputBuffer.h"
 #include "llvm/Support/Parallel.h"
 #include "llvm/Support/RandomNumberGenerator.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/TimeProfiler.h"
 #include "llvm/Support/xxhash.h"
 #include <algorithm>
@@ -811,7 +812,22 @@ void Writer::run() {
 
   if (!ctx.config.pdbPath.empty() && ctx.config.debug) {
     assert(buildId);
-    createPDB(ctx, sectionTable, buildId->buildId);
+    // Create PDB file if enabled
+    if (ctx.config.enablePDB) {
+      llvm::outs() << "[DEBUG] Before writing PDB file\n";
+      llvm::outs().flush();
+      createPDB(ctx, sectionTable, buildId->buildId, /*createPSB=*/false);
+      llvm::outs() << "[DEBUG] After writing PDB file\n";
+      llvm::outs().flush();
+    }
+    // Create PSB file if enabled
+    if (ctx.config.enablePSB) {
+      llvm::outs() << "[DEBUG] Before writing PSB file\n";
+      llvm::outs().flush();
+      createPDB(ctx, sectionTable, buildId->buildId, /*createPSB=*/true);
+      llvm::outs() << "[DEBUG] After writing PSB file\n";
+      llvm::outs().flush();
+    }
   }
   writeBuildId();
 

@@ -20,6 +20,10 @@ class TypeCollection;
 class TypeIndex;
 LLVM_ABI std::string computeTypeName(TypeCollection &Types, TypeIndex Index);
 LLVM_ABI StringRef getSymbolName(CVSymbol Sym);
+/// For procedure symbols (S_GPROC32, S_LPROC32, etc.), return the linkage name
+/// (mangled name) which is the second null-terminated string in the record.
+/// For other symbols or if no linkage name exists, falls back to getSymbolName.
+LLVM_ABI StringRef getSymbolLinkageName(CVSymbol Sym);
 } // namespace codeview
 } // namespace llvm
 

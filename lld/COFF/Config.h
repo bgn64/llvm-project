@@ -150,6 +150,8 @@ struct Configuration {
   int pdbPageSize = 4096;
   llvm::SmallString<128> pdbPath;
   llvm::SmallString<128> pdbSourcePath;
+  bool enablePDB = true;  // Control whether to create PDB file
+  bool enablePSB = true;  // Control whether to create PSB file
   std::vector<llvm::StringRef> argv;
 
   // Symbols in this set are considered as live by the garbage collector.

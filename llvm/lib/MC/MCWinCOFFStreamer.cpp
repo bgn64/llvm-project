@@ -431,7 +431,10 @@ void MCWinCOFFStreamer::finalizeCGProfileEntry(const MCSymbolRefExpr *&SRE) {
 }
 
 void MCWinCOFFStreamer::finishImpl() {
+  llvm::outs() << "[MCWinCOFFStreamer] finishImpl() - calling CVContext.finish()\n";
   getContext().getCVContext().finish();
+  llvm::outs() << "[MCWinCOFFStreamer] finishImpl() - calling PSBContext.finish()\n";
+  getContext().getCVContext(/*IsPSB=*/true).finish();
   MCAssembler &Asm = getAssembler();
   if (Asm.getWriter().getEmitAddrsigSection()) {
     // Register the section.

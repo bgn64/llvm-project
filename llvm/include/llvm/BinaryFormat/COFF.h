@@ -820,7 +820,9 @@ struct ImportHeader {
 
 enum CodeViewIdentifiers {
   DEBUG_SECTION_MAGIC = 0x4,
-  DEBUG_HASHES_SECTION_MAGIC = 0x133C9C5
+  DEBUG_HASHES_SECTION_MAGIC = 0x133C9C5,
+  PSB_SECTION_MAGIC = 0x5,
+  PSB_HASHES_SECTION_MAGIC = 0x133C9C6
 };
 
 // These flags show up in the @feat.00 symbol. They appear to be some kind of

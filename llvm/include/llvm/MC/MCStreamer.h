@@ -284,7 +284,8 @@ protected:
   virtual void emitRawTextImpl(StringRef String);
 
   /// Returns true if the .cv_loc directive is in the right section.
-  bool checkCVLocSection(unsigned FuncId, unsigned FileNo, SMLoc Loc);
+  bool checkCVLocSection(unsigned FuncId, unsigned FileNo, SMLoc Loc,
+                         bool IsPSB = false);
 
 public:
   MCStreamer(const MCStreamer &) = delete;
@@ -899,69 +900,84 @@ public:
   /// Associate a filename with a specified logical file number, and also
   /// specify that file's checksum information.  This implements the '.cv_file 4
   /// "foo.c"' assembler directive. Returns true on success.
+  /// \param IsPSB If true, use PSB CodeView context; otherwise use standard.
   virtual bool emitCVFileDirective(unsigned FileNo, StringRef Filename,
                                    ArrayRef<uint8_t> Checksum,
-                                   unsigned ChecksumKind);
+                                   unsigned ChecksumKind, bool IsPSB = false);
 
   /// Introduces a function id for use with .cv_loc.
-  virtual bool emitCVFuncIdDirective(unsigned FunctionId);
+  /// \param IsPSB If true, use PSB CodeView context; otherwise use standard.
+  virtual bool emitCVFuncIdDirective(unsigned FunctionId, bool IsPSB = false);
 
   /// Introduces an inline call site id for use with .cv_loc. Includes
   /// extra information for inline line table generation.
+  /// \param IsPSB If true, use PSB CodeView context; otherwise use standard.
   virtual bool emitCVInlineSiteIdDirective(unsigned FunctionId, unsigned IAFunc,
                                            unsigned IAFile, unsigned IALine,
-                                           unsigned IACol, SMLoc Loc);
+                                           unsigned IACol, SMLoc Loc,
+                                           bool IsPSB = false);
 
   /// This implements the CodeView '.cv_loc' assembler directive.
+  /// \param IsPSB If true, use PSB CodeView context; otherwise use standard.
   virtual void emitCVLocDirective(unsigned FunctionId, unsigned FileNo,
                                   unsigned Line, unsigned Column,
                                   bool PrologueEnd, bool IsStmt,
-                                  StringRef FileName, SMLoc Loc);
+                                  StringRef FileName, SMLoc Loc,
+                                  bool IsPSB = false);
 
   /// This implements the CodeView '.cv_linetable' assembler directive.
+  /// \param IsPSB If true, use PSB CodeView context; otherwise use standard.
   virtual void emitCVLinetableDirective(unsigned FunctionId,
                                         const MCSymbol *FnStart,
-                                        const MCSymbol *FnEnd);
+                                        const MCSymbol *FnEnd,
+                                        bool IsPSB = false);
 
   /// This implements the CodeView '.cv_inline_linetable' assembler
   /// directive.
+  /// \param IsPSB If true, use PSB CodeView context; otherwise use standard.
   virtual void emitCVInlineLinetableDirective(unsigned PrimaryFunctionId,
                                               unsigned SourceFileId,
                                               unsigned SourceLineNum,
                                               const MCSymbol *FnStartSym,
-                                              const MCSymbol *FnEndSym);
+                                              const MCSymbol *FnEndSym,
+                                              bool IsPSB = false);
 
   /// This implements the CodeView '.cv_def_range' assembler
   /// directive.
+  /// \param IsPSB If true, use PSB CodeView context; otherwise use standard.
   virtual void emitCVDefRangeDirective(
       ArrayRef<std::pair<const MCSymbol *, const MCSymbol *>> Ranges,
-      StringRef FixedSizePortion);
+      StringRef FixedSizePortion, bool IsPSB = false);
 
   virtual void emitCVDefRangeDirective(
       ArrayRef<std::pair<const MCSymbol *, const MCSymbol *>> Ranges,
-      codeview::DefRangeRegisterRelHeader DRHdr);
+      codeview::DefRangeRegisterRelHeader DRHdr, bool IsPSB = false);
 
   virtual void emitCVDefRangeDirective(
       ArrayRef<std::pair<const MCSymbol *, const MCSymbol *>> Ranges,
-      codeview::DefRangeSubfieldRegisterHeader DRHdr);
+      codeview::DefRangeSubfieldRegisterHeader DRHdr, bool IsPSB = false);
 
   virtual void emitCVDefRangeDirective(
       ArrayRef<std::pair<const MCSymbol *, const MCSymbol *>> Ranges,
-      codeview::DefRangeRegisterHeader DRHdr);
+      codeview::DefRangeRegisterHeader DRHdr, bool IsPSB = false);
 
   virtual void emitCVDefRangeDirective(
       ArrayRef<std::pair<const MCSymbol *, const MCSymbol *>> Ranges,
-      codeview::DefRangeFramePointerRelHeader DRHdr);
+      codeview::DefRangeFramePointerRelHeader DRHdr, bool IsPSB = false);
 
   /// This implements the CodeView '.cv_stringtable' assembler directive.
-  virtual void emitCVStringTableDirective() {}
+  /// \param IsPSB If true, use PSB CodeView context; otherwise use standard.
+  virtual void emitCVStringTableDirective(bool IsPSB = false) {}
 
   /// This implements the CodeView '.cv_filechecksums' assembler directive.
-  virtual void emitCVFileChecksumsDirective() {}
+  /// \param IsPSB If true, use PSB CodeView context; otherwise use standard.
+  virtual void emitCVFileChecksumsDirective(bool IsPSB = false) {}
 
   /// This implements the CodeView '.cv_filechecksumoffset' assembler
   /// directive.
-  virtual void emitCVFileChecksumOffsetDirective(unsigned FileNo) {}
+  /// \param IsPSB If true, use PSB CodeView context; otherwise use standard.
+  virtual void emitCVFileChecksumOffsetDirective(unsigned FileNo,
+                                                 bool IsPSB = false) {}
 
   /// This implements the CodeView '.cv_fpo_data' assembler directive.
   virtual void emitCVFPOData(const MCSymbol *ProcSym, SMLoc Loc = {}) {}

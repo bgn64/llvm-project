@@ -146,6 +146,11 @@ protected:
   MCSection *COFFDebugTypesSection = nullptr;
   MCSection *COFFGlobalTypeHashesSection = nullptr;
 
+  // PSB (Portable Symbols for Binaries) sections - alternate CodeView sections
+  MCSection *COFFPSBSymbolsSection = nullptr;
+  MCSection *COFFPSBTypesSection = nullptr;
+  MCSection *COFFPSBGlobalTypeHashesSection = nullptr;
+
   /// Extra TLS Variable Data section.
   ///
   /// If the target needs to put additional information for a TLS variable,
@@ -349,6 +354,17 @@ public:
   }
   MCSection *getCOFFGlobalTypeHashesSection() const {
     return COFFGlobalTypeHashesSection;
+  }
+
+  // PSB section getters
+  MCSection *getCOFFPSBSymbolsSection() const {
+    return COFFPSBSymbolsSection;
+  }
+  MCSection *getCOFFPSBTypesSection() const {
+    return COFFPSBTypesSection;
+  }
+  MCSection *getCOFFPSBGlobalTypeHashesSection() const {
+    return COFFPSBGlobalTypeHashesSection;
   }
 
   MCSection *getTLSExtraDataSection() const { return TLSExtraDataSection; }

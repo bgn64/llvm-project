@@ -66,8 +66,9 @@ class PDBLinker {
   friend DebugSHandler;
 
 public:
-  PDBLinker(COFFLinkerContext &ctx)
-      : builder(bAlloc()), tMerger(ctx, bAlloc()), ctx(ctx) {
+  PDBLinker(COFFLinkerContext &ctx, bool createPSB = false)
+      : builder(bAlloc()), tMerger(ctx, bAlloc()), ctx(ctx),
+        createPSB(createPSB) {
     // This isn't strictly necessary, but link.exe usually puts an empty string
     // as the first "valid" string in the string table, so we do the same in
     // order to maintain as much byte-for-byte compatibility as possible.
@@ -160,6 +161,16 @@ private:
   uint64_t publicSymbols = 0;
   uint64_t nbTypeRecords = 0;
   uint64_t nbTypeRecordsBytes = 0;
+
+  /// Whether to create a PSB file (using .psb$* sections) instead of a PDB
+  /// file (using .debug$* sections).
+  bool createPSB = false;
+
+  /// Get the debug symbols section name based on createPSB flag.
+  StringRef getDebugSName() const { return createPSB ? ".psb$S" : ".debug$S"; }
+
+  /// Get the debug FPO section name based on createPSB flag.
+  StringRef getDebugFName() const { return createPSB ? ".psb$F" : ".debug$F"; }
 };
 
 /// Represents an unrelocated DEBUG_S_FRAMEDATA subsection.
@@ -175,6 +186,9 @@ enum : uint32_t { kSymbolStreamMagicSize = 4 };
 class DebugSHandler {
   COFFLinkerContext &ctx;
   PDBLinker &linker;
+
+  /// Get the debug symbols section name based on linker's createPSB flag.
+  StringRef getDebugSName() const { return linker.getDebugSName(); }
 
   /// The object file whose .debug$S sections we're processing.
   ObjFile &file;
@@ -483,7 +497,8 @@ static bool symbolGoesInGlobalsStream(const CVSymbol &sym,
 
 static void addGlobalSymbol(pdb::GSIStreamBuilder &builder, uint16_t modIndex,
                             unsigned symOffset,
-                            std::vector<uint8_t> &symStorage) {
+                            std::vector<uint8_t> &symStorage,
+                            bool useLinkageName = false) {
   CVSymbol sym{ArrayRef(symStorage)};
   switch (sym.kind()) {
   case SymbolKind::S_CONSTANT:
@@ -510,7 +525,10 @@ static void addGlobalSymbol(pdb::GSIStreamBuilder &builder, uint16_t modIndex,
     ps.Module = modIndex;
     // For some reason, MSVC seems to add one to this value.
     ++ps.Module;
-    ps.Name = getSymbolName(sym);
+    // When creating PSB files, use the linkage name (mangled name) which is
+    // stored as the second string in the procedure record. This allows tools
+    // like llvm-profgen to correlate profile data with symbol names.
+    ps.Name = useLinkageName ? getSymbolLinkageName(sym) : getSymbolName(sym);
     ps.SumName = 0;
     ps.SymOffset = symOffset;
     builder.addGlobalSymbol(ps);
@@ -608,7 +626,7 @@ void PDBLinker::analyzeSymbolSubsection(
                             nextRelocIndex, storage);
           addGlobalSymbol(builder.getGsiBuilder(),
                           file->moduleDBI->getModuleIndex(), moduleSymOffset,
-                          storage);
+                          storage, createPSB);
           ++globalSymbols;
         }
 
@@ -641,14 +659,15 @@ Error PDBLinker::writeAllModuleSymbolRecords(ObjFile *file,
   SmallVector<uint32_t, 4> scopes;
 
   // Visit all live .debug$S sections a second time, and write them to the PDB.
+  StringRef debugSName = createPSB ? ".psb$S" : ".debug$S";
   for (SectionChunk *debugChunk : file->getDebugChunks()) {
     if (!debugChunk->live || debugChunk->getSize() == 0 ||
-        debugChunk->getSectionName() != ".debug$S")
+        debugChunk->getSectionName() != debugSName)
       continue;
 
     ArrayRef<uint8_t> sectionContents = debugChunk->getContents();
     auto contents =
-        SectionChunk::consumeDebugMagic(sectionContents, ".debug$S");
+        SectionChunk::consumeDebugMagic(sectionContents, debugSName);
     DebugSubsectionArray subsections;
     BinaryStreamReader reader(contents, llvm::endianness::little);
     exitOnErr(reader.readArray(subsections, contents.size()));
@@ -750,7 +769,7 @@ void DebugSHandler::handleDebugS(SectionChunk *debugChunk) {
   // Note that we are processing the *unrelocated* section contents. They will
   // be relocated later during PDB writing.
   ArrayRef<uint8_t> contents = debugChunk->getContents();
-  contents = SectionChunk::consumeDebugMagic(contents, ".debug$S");
+  contents = SectionChunk::consumeDebugMagic(contents, getDebugSName());
   DebugSubsectionArray subsections;
   BinaryStreamReader reader(contents, llvm::endianness::little);
   ExitOnError exitOnErr;
@@ -912,16 +931,29 @@ getFileName(const DebugStringTableSubsectionRef &strings,
 }
 
 void DebugSHandler::finish() {
+  const char *fileType = linker.createPSB ? "PSB" : "PDB";
+  llvm::outs() << "[" << fileType << "]       finish() starting for file: " << file.getName() << "\n";
+  llvm::outs().flush();
+
   pdb::DbiStreamBuilder &dbiBuilder = linker.builder.getDbiBuilder();
 
   // If we found any symbol records for the module symbol stream, defer them.
-  if (moduleStreamSize > kSymbolStreamMagicSize)
+  llvm::outs() << "[" << fileType << "]       finish() moduleStreamSize=" << moduleStreamSize << ", kSymbolStreamMagicSize=" << kSymbolStreamMagicSize << "\n";
+  llvm::outs().flush();
+  if (moduleStreamSize > kSymbolStreamMagicSize) {
+    llvm::outs() << "[" << fileType << "]       finish() calling addUnmergedSymbols()\n";
+    llvm::outs().flush();
     file.moduleDBI->addUnmergedSymbols(&file, moduleStreamSize -
                                                   kSymbolStreamMagicSize);
+    llvm::outs() << "[" << fileType << "]       finish() addUnmergedSymbols() completed\n";
+    llvm::outs().flush();
+  }
 
   // We should have seen all debug subsections across the entire object file now
   // which means that if a StringTable subsection and Checksums subsection were
   // present, now is the time to handle them.
+  llvm::outs() << "[" << fileType << "]       finish() cvStrTab.valid()=" << cvStrTab.valid() << ", checksums.valid()=" << checksums.valid() << "\n";
+  llvm::outs().flush();
   if (!cvStrTab.valid()) {
     if (checksums.valid())
       fatal(".debug$S sections with a checksums subsection must also contain a "
@@ -931,6 +963,8 @@ void DebugSHandler::finish() {
       Warn(ctx)
           << "No StringTable subsection was encountered, but there are string "
              "table references";
+    llvm::outs() << "[" << fileType << "]       finish() early return (no cvStrTab)\n";
+    llvm::outs().flush();
     return;
   }
 
@@ -940,7 +974,12 @@ void DebugSHandler::finish() {
   // relocation, which is then added to the RvaStart of each frame data record
   // when it is added to the PDB. The string table indices for the FPO program
   // must also be rewritten to use the PDB string table.
+  llvm::outs() << "[" << fileType << "]       finish() processing " << frameDataSubsecs.size() << " FPO data subsections\n";
+  llvm::outs().flush();
+  int fpoIndex = 0;
   for (const UnrelocatedFpoData &subsec : frameDataSubsecs) {
+    llvm::outs() << "[" << fileType << "]       finish() processing FPO subsection " << fpoIndex++ << "\n";
+    llvm::outs().flush();
     // Relocate the first four bytes of the subection and reinterpret them as a
     // 32 bit little-endian integer.
     SectionChunk *debugChunk = subsec.debugChunk;
@@ -967,13 +1006,19 @@ void DebugSHandler::finish() {
       dbiBuilder.addNewFpoData(fd);
     }
   }
+  llvm::outs() << "[" << fileType << "]       finish() FPO data processing completed\n";
+  llvm::outs().flush();
 
   // Translate the fixups and pass them off to the module builder so they will
   // be applied during writing.
+  llvm::outs() << "[" << fileType << "]       finish() translating " << stringTableFixups.size() << " string table fixups\n";
+  llvm::outs().flush();
   for (StringTableFixup &ref : stringTableFixups) {
     ref.StrTabOffset = translateStringTableIndex(ctx, ref.StrTabOffset,
                                                  cvStrTab, linker.pdbStrTab);
   }
+  llvm::outs() << "[" << fileType << "]       finish() calling setStringTableFixups()\n";
+  llvm::outs().flush();
   file.moduleDBI->setStringTableFixups(std::move(stringTableFixups));
 
   // Make a new file checksum table that refers to offsets in the PDB-wide
@@ -982,19 +1027,50 @@ void DebugSHandler::finish() {
   // subsections. The new checksum table must have the exact same layout and
   // size as the original. Otherwise, the file references in the line and
   // inlinee line tables will be incorrect.
+  llvm::outs() << "[" << fileType << "]       finish() creating new checksums table\n";
+  uint64_t strTabSize = cvStrTab.getBuffer().getLength();
+  llvm::outs() << "[" << fileType << "]       finish() cvStrTab buffer size: " << strTabSize << "\n";
+  llvm::outs().flush();
   auto newChecksums = std::make_unique<DebugChecksumsSubsection>(linker.pdbStrTab);
+  int checksumIndex = 0;
   for (const FileChecksumEntry &fc : checksums) {
+    llvm::outs() << "[" << fileType << "]       finish() processing checksum entry " << checksumIndex++ << ", FileNameOffset=" << fc.FileNameOffset << " (cvStrTab buffer size=" << strTabSize << ")\n";
+    llvm::outs().flush();
+    
+    // Check if offset is valid before attempting to get string
+    if (fc.FileNameOffset >= strTabSize) {
+      llvm::outs() << "[" << fileType << "]       finish() ERROR: FileNameOffset " << fc.FileNameOffset << " is >= cvStrTab buffer size " << strTabSize << "!\n";
+      llvm::outs().flush();
+    }
+    
     SmallString<128> filename =
         exitOnErr(cvStrTab.getString(fc.FileNameOffset));
+    llvm::outs() << "[" << fileType << "]       finish() got filename: " << filename << "\n";
+    llvm::outs().flush();
     linker.pdbMakeAbsolute(filename);
+    llvm::outs() << "[" << fileType << "]       finish() absolute filename: " << filename << "\n";
+    llvm::outs().flush();
+    llvm::outs() << "[" << fileType << "]       finish() calling addModuleSourceFile()\n";
+    llvm::outs().flush();
     exitOnErr(dbiBuilder.addModuleSourceFile(*file.moduleDBI, filename));
+    llvm::outs() << "[" << fileType << "]       finish() calling addChecksum()\n";
+    llvm::outs().flush();
     newChecksums->addChecksum(filename, fc.Kind, fc.Checksum);
   }
+  llvm::outs() << "[" << fileType << "]       finish() processed " << checksumIndex << " checksum entries\n";
+  llvm::outs().flush();
+
+  llvm::outs() << "[" << fileType << "]       finish() verifying checksum table size\n";
+  llvm::outs().flush();
   assert(checksums.getArray().getUnderlyingStream().getLength() ==
              newChecksums->calculateSerializedSize() &&
          "file checksum table must have same layout");
 
+  llvm::outs() << "[" << fileType << "]       finish() calling addDebugSubsection()\n";
+  llvm::outs().flush();
   file.moduleDBI->addDebugSubsection(std::move(newChecksums));
+  llvm::outs() << "[" << fileType << "]       finish() completed successfully\n";
+  llvm::outs().flush();
 }
 
 static void warnUnusable(InputFile *f, Error e, bool shouldWarn) {
@@ -1018,29 +1094,43 @@ static ArrayRef<uint8_t> relocateDebugChunk(SectionChunk &debugChunk) {
 }
 
 void PDBLinker::addDebugSymbols(TpiSource *source) {
+  const char *fileType = createPSB ? "PSB" : "PDB";
   // If this TpiSource doesn't have an object file, it must be from a type
   // server PDB. Type server PDBs do not contain symbols, so stop here.
   if (!source->file)
     return;
+
+  llvm::outs() << "[" << fileType << "]     addDebugSymbols() for file: " << source->file->getName() << "\n";
+  llvm::outs().flush();
 
   llvm::TimeTraceScope timeScope("Merge symbols");
   ScopedTimer t(ctx.symbolMergingTimer);
   ExitOnError exitOnErr;
   pdb::DbiStreamBuilder &dbiBuilder = builder.getDbiBuilder();
   DebugSHandler dsh(ctx, *this, *source->file);
-  // Now do all live .debug$S and .debug$F sections.
+  // Now do all live .debug$S/.psb$S and .debug$F/.psb$F sections.
+  StringRef debugSName = getDebugSName();
+  StringRef debugFName = getDebugFName();
+  
+  llvm::outs() << "[" << fileType << "]     Looking for sections: " << debugSName << " and " << debugFName << "\n";
+  llvm::outs().flush();
+  
+  int debugSCount = 0;
+  int debugFCount = 0;
   for (SectionChunk *debugChunk : source->file->getDebugChunks()) {
     if (!debugChunk->live || debugChunk->getSize() == 0)
       continue;
 
-    bool isDebugS = debugChunk->getSectionName() == ".debug$S";
-    bool isDebugF = debugChunk->getSectionName() == ".debug$F";
+    bool isDebugS = debugChunk->getSectionName() == debugSName;
+    bool isDebugF = debugChunk->getSectionName() == debugFName;
     if (!isDebugS && !isDebugF)
       continue;
 
     if (isDebugS) {
+      debugSCount++;
       dsh.handleDebugS(debugChunk);
     } else if (isDebugF) {
+      debugFCount++;
       // Handle old FPO data .debug$F sections. These are relatively rare.
       ArrayRef<uint8_t> relocatedDebugContents =
           relocateDebugChunk(*debugChunk);
@@ -1056,6 +1146,9 @@ void PDBLinker::addDebugSymbols(TpiSource *source) {
         dbiBuilder.addOldFpoData(fd);
     }
   }
+  
+  llvm::outs() << "[" << fileType << "]     Processed " << debugSCount << " " << debugSName << " and " << debugFCount << " " << debugFName << " sections\n";
+  llvm::outs().flush();
 
   // Do any post-processing now that all .debug$S sections have been processed.
   dsh.finish();
@@ -1093,6 +1186,12 @@ void PDBLinker::createModuleDBI(ObjFile *file) {
 }
 
 void PDBLinker::addDebug(TpiSource *source) {
+  const char *fileType = createPSB ? "PSB" : "PDB";
+  if (source->file) {
+    llvm::outs() << "[" << fileType << "]     addDebug() for: " << source->file->getName() << "\n";
+    llvm::outs().flush();
+  }
+
   // Before we can process symbol substreams from .debug$S, we need to process
   // type information, file checksums, and the string table. Add type info to
   // the PDB first, so that we can get the map from object file type and item
@@ -1103,6 +1202,8 @@ void PDBLinker::addDebug(TpiSource *source) {
     ScopedTimer t(ctx.typeMergingTimer);
     if (Error e = source->mergeDebugT(&tMerger)) {
       // If type merging failed, ignore the symbols.
+      llvm::outs() << "[" << fileType << "]     addDebug() type merging failed for source\n";
+      llvm::outs().flush();
       warnUnusable(source->file, std::move(e),
                    ctx.config.warnDebugInfoUnusable);
       return;
@@ -1147,33 +1248,49 @@ static pdb::BulkPublic createPublic(COFFLinkerContext &ctx, Defined *def) {
 // Add all object files to the PDB. Merge .debug$T sections into IpiData and
 // TpiData.
 void PDBLinker::addObjectsToPDB() {
+  const char *fileType = createPSB ? "PSB" : "PDB";
+  llvm::outs() << "[" << fileType << "]   addObjectsToPDB() starting, objFileInstances count: " << ctx.objFileInstances.size() << "\n";
+  llvm::outs().flush();
   {
     llvm::TimeTraceScope timeScope("Add objects to PDB");
     ScopedTimer t1(ctx.addObjectsTimer);
 
     // Create module descriptors
+    llvm::outs() << "[" << fileType << "]   Creating module descriptors\n";
+    llvm::outs().flush();
     for (ObjFile *obj : ctx.objFileInstances)
       createModuleDBI(obj);
 
     // Reorder dependency type sources to come first.
+    llvm::outs() << "[" << fileType << "]   Sorting dependencies\n";
+    llvm::outs().flush();
     tMerger.sortDependencies();
 
     // Merge type information from input files using global type hashing.
-    if (ctx.config.debugGHashes)
+    if (ctx.config.debugGHashes) {
+      llvm::outs() << "[" << fileType << "]   Merging types with GHash\n";
+      llvm::outs().flush();
       tMerger.mergeTypesWithGHash();
+    }
 
     // Merge dependencies and then regular objects.
     {
+      llvm::outs() << "[" << fileType << "]   Merging debug info (dependencies), count: " << tMerger.dependencySources.size() << "\n";
+      llvm::outs().flush();
       llvm::TimeTraceScope timeScope("Merge debug info (dependencies)");
       for (TpiSource *source : tMerger.dependencySources)
         addDebug(source);
     }
     {
+      llvm::outs() << "[" << fileType << "]   Merging debug info (objects), count: " << tMerger.objectSources.size() << "\n";
+      llvm::outs().flush();
       llvm::TimeTraceScope timeScope("Merge debug info (objects)");
       for (TpiSource *source : tMerger.objectSources)
         addDebug(source);
     }
 
+    llvm::outs() << "[" << fileType << "]   Setting string table\n";
+    llvm::outs().flush();
     builder.getStringTableBuilder().setStrings(pdbStrTab);
   }
 
@@ -1181,6 +1298,9 @@ void PDBLinker::addObjectsToPDB() {
   {
     llvm::TimeTraceScope timeScope("TPI/IPI stream layout");
     ScopedTimer t2(ctx.tpiStreamLayoutTimer);
+
+    llvm::outs() << "[" << fileType << "]   Constructing TPI/IPI stream contents\n";
+    llvm::outs().flush();
 
     // Collect all the merged types.
     if (ctx.config.debugGHashes) {
@@ -1197,9 +1317,15 @@ void PDBLinker::addObjectsToPDB() {
       nbTypeRecordsBytes += source->nbTypeRecordsBytes;
     }
   }
+  llvm::outs() << "[" << fileType << "]   addObjectsToPDB() completed\n";
+  llvm::outs().flush();
 }
 
 void PDBLinker::addPublicsToPDB() {
+  const char *fileType = createPSB ? "PSB" : "PDB";
+  llvm::outs() << "[" << fileType << "]   addPublicsToPDB() starting\n";
+  llvm::outs().flush();
+
   llvm::TimeTraceScope timeScope("Publics layout");
   ScopedTimer t3(ctx.publicsLayoutTimer);
   // Compute the public symbols.
@@ -1319,6 +1445,10 @@ void PDBLinker::printStats() {
 }
 
 void PDBLinker::addNatvisFiles() {
+  const char *fileType = createPSB ? "PSB" : "PDB";
+  llvm::outs() << "[" << fileType << "]   addNatvisFiles() - " << ctx.config.natvisFiles.size() << " natvis files\n";
+  llvm::outs().flush();
+
   llvm::TimeTraceScope timeScope("Natvis files");
   for (StringRef file : ctx.config.natvisFiles) {
     ErrorOr<std::unique_ptr<MemoryBuffer>> dataOrErr =
@@ -1339,6 +1469,10 @@ void PDBLinker::addNatvisFiles() {
 }
 
 void PDBLinker::addNamedStreams() {
+  const char *fileType = createPSB ? "PSB" : "PDB";
+  llvm::outs() << "[" << fileType << "]   addNamedStreams() - " << ctx.config.namedStreams.size() << " named streams\n";
+  llvm::outs().flush();
+
   llvm::TimeTraceScope timeScope("Named streams");
   ExitOnError exitOnErr;
   for (const auto &streamFile : ctx.config.namedStreams) {
@@ -1521,8 +1655,15 @@ static void addLinkerModuleSectionSymbol(pdb::DbiModuleDescriptorBuilder &mod,
 
 // Add all import files as modules to the PDB.
 void PDBLinker::addImportFilesToPDB() {
-  if (ctx.importFileInstances.empty())
+  const char *fileType = createPSB ? "PSB" : "PDB";
+  if (ctx.importFileInstances.empty()) {
+    llvm::outs() << "[" << fileType << "]   addImportFilesToPDB() - no import files\n";
+    llvm::outs().flush();
     return;
+  }
+
+  llvm::outs() << "[" << fileType << "]   addImportFilesToPDB() - processing " << ctx.importFileInstances.size() << " import files\n";
+  llvm::outs().flush();
 
   llvm::TimeTraceScope timeScope("Import files");
   ExitOnError exitOnErr;
@@ -1610,44 +1751,85 @@ void PDBLinker::addImportFilesToPDB() {
   }
 }
 
-// Creates a PDB file.
+// Creates a PDB or PSB file.
 void lld::coff::createPDB(COFFLinkerContext &ctx,
                           ArrayRef<uint8_t> sectionTable,
-                          llvm::codeview::DebugInfo *buildId) {
-  llvm::TimeTraceScope timeScope("PDB file");
+                          llvm::codeview::DebugInfo *buildId,
+                          bool createPSB) {
+  const char *fileType = createPSB ? "PSB" : "PDB";
+  llvm::outs() << "[" << fileType << "] Starting " << fileType << " creation\n";
+  llvm::outs().flush();
+
+  llvm::TimeTraceScope timeScope(createPSB ? "PSB file" : "PDB file");
   ScopedTimer t1(ctx.totalPdbLinkTimer);
   {
-    PDBLinker pdb(ctx);
+    llvm::outs() << "[" << fileType << "] Creating PDBLinker\n";
+    llvm::outs().flush();
+    PDBLinker pdb(ctx, createPSB);
 
     pdb.initialize(buildId);
+
+    llvm::outs() << "[" << fileType << "] Calling addObjectsToPDB()\n";
+    llvm::outs().flush();
     pdb.addObjectsToPDB();
+
+    llvm::outs() << "[" << fileType << "] Calling addImportFilesToPDB()\n";
+    llvm::outs().flush();
     pdb.addImportFilesToPDB();
+
+    llvm::outs() << "[" << fileType << "] Calling addSections()\n";
+    llvm::outs().flush();
     pdb.addSections(sectionTable);
+
+    llvm::outs() << "[" << fileType << "] Calling addNatvisFiles()\n";
+    llvm::outs().flush();
     pdb.addNatvisFiles();
+
+    llvm::outs() << "[" << fileType << "] Calling addNamedStreams()\n";
+    llvm::outs().flush();
     pdb.addNamedStreams();
+
+    llvm::outs() << "[" << fileType << "] Calling addPublicsToPDB()\n";
+    llvm::outs().flush();
     pdb.addPublicsToPDB();
 
     {
       llvm::TimeTraceScope timeScope("Commit PDB file to disk");
       ScopedTimer t2(ctx.diskCommitTimer);
       codeview::GUID guid;
+      llvm::outs() << "[" << fileType << "] Calling commit()\n";
+      llvm::outs().flush();
       pdb.commit(&guid);
+      llvm::outs() << "[" << fileType << "] commit() completed\n";
+      llvm::outs().flush();
       memcpy(&buildId->PDB70.Signature, &guid, 16);
     }
 
     t1.stop();
     pdb.printStats();
 
+    llvm::outs() << "[" << fileType << "] PDBLinker destructor starting\n";
+    llvm::outs().flush();
+
     // Manually start this profile point to measure ~PDBLinker().
     if (getTimeTraceProfilerInstance() != nullptr)
-      timeTraceProfilerBegin("PDBLinker destructor", StringRef(""));
+      timeTraceProfilerBegin(createPSB ? "PSBLinker destructor"
+                                       : "PDBLinker destructor",
+                             StringRef(""));
   }
   // Manually end this profile point to measure ~PDBLinker().
   if (getTimeTraceProfilerInstance() != nullptr)
     timeTraceProfilerEnd();
+
+  llvm::outs() << "[" << fileType << "] " << fileType << " creation completed\n";
+  llvm::outs().flush();
 }
 
 void PDBLinker::initialize(llvm::codeview::DebugInfo *buildId) {
+  const char *fileType = createPSB ? "PSB" : "PDB";
+  llvm::outs() << "[" << fileType << "]   initialize() starting, pdbPageSize: " << ctx.config.pdbPageSize << "\n";
+  llvm::outs().flush();
+
   ExitOnError exitOnErr;
   exitOnErr(builder.initialize(ctx.config.pdbPageSize));
 
@@ -1676,14 +1858,24 @@ void PDBLinker::initialize(llvm::codeview::DebugInfo *buildId) {
   // they fail to work at all.  Since we know we produce PDBs that are
   // compatible with LINK 14.11, we set that version number here.
   dbiBuilder.setBuildNumber(14, 11);
+
+  llvm::outs() << "[" << fileType << "]   initialize() completed\n";
+  llvm::outs().flush();
 }
 
 void PDBLinker::addSections(ArrayRef<uint8_t> sectionTable) {
+  const char *fileType = createPSB ? "PSB" : "PDB";
+  llvm::outs() << "[" << fileType << "]   addSections() starting, " << ctx.outputSections.size() << " output sections\n";
+  llvm::outs().flush();
+
   llvm::TimeTraceScope timeScope("PDB output sections");
   ExitOnError exitOnErr;
   // It's not entirely clear what this is, but the * Linker * module uses it.
   pdb::DbiStreamBuilder &dbiBuilder = builder.getDbiBuilder();
   nativePath = ctx.config.pdbPath;
+  // Use .psb extension for PSB files.
+  if (createPSB)
+    llvm::sys::path::replace_extension(nativePath, ".psb");
   pdbMakeAbsolute(nativePath);
   uint32_t pdbFilePathNI = dbiBuilder.addECName(nativePath);
   auto &linkerModule = exitOnErr(dbiBuilder.addModuleInfo("* Linker *"));
@@ -1719,17 +1911,39 @@ void PDBLinker::addSections(ArrayRef<uint8_t> sectionTable) {
 }
 
 void PDBLinker::commit(codeview::GUID *guid) {
-  // Print an error and continue if PDB writing fails. This is done mainly so
-  // the user can see the output of /time and /summary, which is very helpful
-  // when trying to figure out why a PDB file is too large.
-  if (Error e = builder.commit(ctx.config.pdbPath, guid)) {
+  const char *fileType = createPSB ? "PSB" : "PDB";
+  // Print an error and continue if PDB/PSB writing fails. This is done mainly
+  // so the user can see the output of /time and /summary, which is very helpful
+  // when trying to figure out why a PDB/PSB file is too large.
+  
+  // Determine the output path - use .psb extension for PSB files.
+  StringRef outputPath = ctx.config.pdbPath;
+  SmallString<128> psbPath;
+  if (createPSB) {
+    psbPath = ctx.config.pdbPath;
+    llvm::sys::path::replace_extension(psbPath, ".psb");
+    outputPath = psbPath;
+  }
+  
+  llvm::outs() << "[" << fileType << "]   commit() called, outputPath: " << outputPath << "\n";
+  llvm::outs().flush();
+  
+  llvm::outs() << "[" << fileType << "]   Calling builder.commit()\n";
+  llvm::outs().flush();
+  if (Error e = builder.commit(outputPath, guid)) {
+    llvm::outs() << "[" << fileType << "]   builder.commit() FAILED with error\n";
+    llvm::outs().flush();
     e = handleErrors(std::move(e), [&](const llvm::msf::MSFError &me) {
       Err(ctx) << me.message();
       if (me.isPageOverflow())
         Err(ctx) << "try setting a larger /pdbpagesize";
     });
     checkError(std::move(e));
-    Err(ctx) << "failed to write PDB file " << Twine(ctx.config.pdbPath);
+    Err(ctx) << "failed to write " << (createPSB ? "PSB" : "PDB") << " file "
+             << Twine(outputPath);
+  } else {
+    llvm::outs() << "[" << fileType << "]   builder.commit() succeeded\n";
+    llvm::outs().flush();
   }
 }
 
@@ -1762,7 +1976,9 @@ static bool findLineTable(const SectionChunk *c, uint32_t addr,
   const uint32_t secrelReloc = getSecrelReloc(c->getArch());
 
   for (SectionChunk *dbgC : c->file->getDebugChunks()) {
-    if (dbgC->getSectionName() != ".debug$S")
+    // Check both .debug$S and .psb$S sections for line tables.
+    StringRef secName = dbgC->getSectionName();
+    if (secName != ".debug$S" && secName != ".psb$S")
       continue;
 
     // Build a mapping of SECREL relocations in dbgC that refer to `c`.
@@ -1778,7 +1994,7 @@ static bool findLineTable(const SectionChunk *c, uint32_t addr,
     }
 
     ArrayRef<uint8_t> contents =
-        SectionChunk::consumeDebugMagic(dbgC->getContents(), ".debug$S");
+        SectionChunk::consumeDebugMagic(dbgC->getContents(), secName);
     DebugSubsectionArray subsections;
     BinaryStreamReader reader(contents, llvm::endianness::little);
     exitOnErr(reader.readArray(subsections, contents.size()));

@@ -269,25 +269,30 @@ bool TpiSource::remapTypesInSymbolRecord(MutableArrayRef<uint8_t> rec) {
   return true;
 }
 
-// A COFF .debug$H section is currently a clang extension.  This function checks
-// if a .debug$H section is in a format that we expect / understand, so that we
-// can ignore any sections which are coincidentally also named .debug$H but do
-// not contain a format we recognize.
+// A COFF .debug$H or .psb$H section is currently a clang extension.  This
+// function checks if such a section is in a format that we expect / understand,
+// so that we can ignore any sections which are coincidentally also named
+// .debug$H or .psb$H but do not contain a format we recognize.
 static bool canUseDebugH(ArrayRef<uint8_t> debugH) {
   if (debugH.size() < sizeof(object::debug_h_header))
     return false;
   auto *header =
       reinterpret_cast<const object::debug_h_header *>(debugH.data());
   debugH = debugH.drop_front(sizeof(object::debug_h_header));
-  return header->Magic == COFF::DEBUG_HASHES_SECTION_MAGIC &&
-         header->Version == 0 &&
+  // Accept either DEBUG_HASHES_SECTION_MAGIC or PSB_HASHES_SECTION_MAGIC.
+  bool validMagic = header->Magic == COFF::DEBUG_HASHES_SECTION_MAGIC ||
+                    header->Magic == COFF::PSB_HASHES_SECTION_MAGIC;
+  return validMagic && header->Version == 0 &&
          header->HashAlgorithm == uint16_t(GlobalTypeHashAlg::BLAKE3) &&
          (debugH.size() % 8 == 0);
 }
 
 static std::optional<ArrayRef<uint8_t>> getDebugH(ObjFile *file) {
+  // Check for both .debug$H and .psb$H sections.
   SectionChunk *sec =
       SectionChunk::findByName(file->getDebugChunks(), ".debug$H");
+  if (!sec)
+    sec = SectionChunk::findByName(file->getDebugChunks(), ".psb$H");
   if (!sec)
     return std::nullopt;
   ArrayRef<uint8_t> contents = sec->getContents();

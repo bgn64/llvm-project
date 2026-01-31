@@ -302,44 +302,51 @@ public:
 
   bool emitCVFileDirective(unsigned FileNo, StringRef Filename,
                            ArrayRef<uint8_t> Checksum,
-                           unsigned ChecksumKind) override;
-  bool emitCVFuncIdDirective(unsigned FuncId) override;
+                           unsigned ChecksumKind, bool IsPSB = false) override;
+  bool emitCVFuncIdDirective(unsigned FuncId, bool IsPSB = false) override;
   bool emitCVInlineSiteIdDirective(unsigned FunctionId, unsigned IAFunc,
                                    unsigned IAFile, unsigned IALine,
-                                   unsigned IACol, SMLoc Loc) override;
+                                   unsigned IACol, SMLoc Loc,
+                                   bool IsPSB = false) override;
   void emitCVLocDirective(unsigned FunctionId, unsigned FileNo, unsigned Line,
                           unsigned Column, bool PrologueEnd, bool IsStmt,
-                          StringRef FileName, SMLoc Loc) override;
+                          StringRef FileName, SMLoc Loc,
+                          bool IsPSB = false) override;
   void emitCVLinetableDirective(unsigned FunctionId, const MCSymbol *FnStart,
-                                const MCSymbol *FnEnd) override;
+                                const MCSymbol *FnEnd,
+                                bool IsPSB = false) override;
   void emitCVInlineLinetableDirective(unsigned PrimaryFunctionId,
                                       unsigned SourceFileId,
                                       unsigned SourceLineNum,
                                       const MCSymbol *FnStartSym,
-                                      const MCSymbol *FnEndSym) override;
+                                      const MCSymbol *FnEndSym,
+                                      bool IsPSB = false) override;
 
   void PrintCVDefRangePrefix(
       ArrayRef<std::pair<const MCSymbol *, const MCSymbol *>> Ranges);
 
   void emitCVDefRangeDirective(
       ArrayRef<std::pair<const MCSymbol *, const MCSymbol *>> Ranges,
-      codeview::DefRangeRegisterRelHeader DRHdr) override;
+      codeview::DefRangeRegisterRelHeader DRHdr, bool IsPSB = false) override;
 
   void emitCVDefRangeDirective(
       ArrayRef<std::pair<const MCSymbol *, const MCSymbol *>> Ranges,
-      codeview::DefRangeSubfieldRegisterHeader DRHdr) override;
+      codeview::DefRangeSubfieldRegisterHeader DRHdr,
+      bool IsPSB = false) override;
 
   void emitCVDefRangeDirective(
       ArrayRef<std::pair<const MCSymbol *, const MCSymbol *>> Ranges,
-      codeview::DefRangeRegisterHeader DRHdr) override;
+      codeview::DefRangeRegisterHeader DRHdr, bool IsPSB = false) override;
 
   void emitCVDefRangeDirective(
       ArrayRef<std::pair<const MCSymbol *, const MCSymbol *>> Ranges,
-      codeview::DefRangeFramePointerRelHeader DRHdr) override;
+      codeview::DefRangeFramePointerRelHeader DRHdr,
+      bool IsPSB = false) override;
 
-  void emitCVStringTableDirective() override;
-  void emitCVFileChecksumsDirective() override;
-  void emitCVFileChecksumOffsetDirective(unsigned FileNo) override;
+  void emitCVStringTableDirective(bool IsPSB = false) override;
+  void emitCVFileChecksumsDirective(bool IsPSB = false) override;
+  void emitCVFileChecksumOffsetDirective(unsigned FileNo,
+                                         bool IsPSB = false) override;
   void emitCVFPOData(const MCSymbol *ProcSym, SMLoc L) override;
 
   void emitIdent(StringRef IdentString) override;
@@ -1748,9 +1755,9 @@ MCSymbol *MCAsmStreamer::getDwarfLineTableSymbol(unsigned CUID) {
 
 bool MCAsmStreamer::emitCVFileDirective(unsigned FileNo, StringRef Filename,
                                         ArrayRef<uint8_t> Checksum,
-                                        unsigned ChecksumKind) {
-  if (!getContext().getCVContext().addFile(*this, FileNo, Filename, Checksum,
-                                           ChecksumKind))
+                                        unsigned ChecksumKind, bool IsPSB) {
+  if (!getContext().getCVContext(IsPSB).addFile(*this, FileNo, Filename,
+                                                Checksum, ChecksumKind))
     return false;
 
   OS << "\t.cv_file\t" << FileNo << ' ';
@@ -1769,28 +1776,29 @@ bool MCAsmStreamer::emitCVFileDirective(unsigned FileNo, StringRef Filename,
   return true;
 }
 
-bool MCAsmStreamer::emitCVFuncIdDirective(unsigned FuncId) {
+bool MCAsmStreamer::emitCVFuncIdDirective(unsigned FuncId, bool IsPSB) {
   OS << "\t.cv_func_id " << FuncId << '\n';
-  return MCStreamer::emitCVFuncIdDirective(FuncId);
+  return MCStreamer::emitCVFuncIdDirective(FuncId, IsPSB);
 }
 
 bool MCAsmStreamer::emitCVInlineSiteIdDirective(unsigned FunctionId,
                                                 unsigned IAFunc,
                                                 unsigned IAFile,
                                                 unsigned IALine, unsigned IACol,
-                                                SMLoc Loc) {
+                                                SMLoc Loc, bool IsPSB) {
   OS << "\t.cv_inline_site_id " << FunctionId << " within " << IAFunc
      << " inlined_at " << IAFile << ' ' << IALine << ' ' << IACol << '\n';
   return MCStreamer::emitCVInlineSiteIdDirective(FunctionId, IAFunc, IAFile,
-                                                 IALine, IACol, Loc);
+                                                 IALine, IACol, Loc, IsPSB);
 }
 
 void MCAsmStreamer::emitCVLocDirective(unsigned FunctionId, unsigned FileNo,
                                        unsigned Line, unsigned Column,
                                        bool PrologueEnd, bool IsStmt,
-                                       StringRef FileName, SMLoc Loc) {
+                                       StringRef FileName, SMLoc Loc,
+                                       bool IsPSB) {
   // Validate the directive.
-  if (!checkCVLocSection(FunctionId, FileNo, Loc))
+  if (!checkCVLocSection(FunctionId, FileNo, Loc, IsPSB))
     return;
 
   OS << "\t.cv_loc\t" << FunctionId << " " << FileNo << " " << Line << " "
@@ -1811,20 +1819,22 @@ void MCAsmStreamer::emitCVLocDirective(unsigned FunctionId, unsigned FileNo,
 
 void MCAsmStreamer::emitCVLinetableDirective(unsigned FunctionId,
                                              const MCSymbol *FnStart,
-                                             const MCSymbol *FnEnd) {
+                                             const MCSymbol *FnEnd,
+                                             bool IsPSB) {
   OS << "\t.cv_linetable\t" << FunctionId << ", ";
   FnStart->print(OS, MAI);
   OS << ", ";
   FnEnd->print(OS, MAI);
   EmitEOL();
-  this->MCStreamer::emitCVLinetableDirective(FunctionId, FnStart, FnEnd);
+  this->MCStreamer::emitCVLinetableDirective(FunctionId, FnStart, FnEnd, IsPSB);
 }
 
 void MCAsmStreamer::emitCVInlineLinetableDirective(unsigned PrimaryFunctionId,
                                                    unsigned SourceFileId,
                                                    unsigned SourceLineNum,
                                                    const MCSymbol *FnStartSym,
-                                                   const MCSymbol *FnEndSym) {
+                                                   const MCSymbol *FnEndSym,
+                                                   bool IsPSB) {
   OS << "\t.cv_inline_linetable\t" << PrimaryFunctionId << ' ' << SourceFileId
      << ' ' << SourceLineNum << ' ';
   FnStartSym->print(OS, MAI);
@@ -1832,7 +1842,8 @@ void MCAsmStreamer::emitCVInlineLinetableDirective(unsigned PrimaryFunctionId,
   FnEndSym->print(OS, MAI);
   EmitEOL();
   this->MCStreamer::emitCVInlineLinetableDirective(
-      PrimaryFunctionId, SourceFileId, SourceLineNum, FnStartSym, FnEndSym);
+      PrimaryFunctionId, SourceFileId, SourceLineNum, FnStartSym, FnEndSym,
+      IsPSB);
 }
 
 void MCAsmStreamer::PrintCVDefRangePrefix(
@@ -1848,7 +1859,7 @@ void MCAsmStreamer::PrintCVDefRangePrefix(
 
 void MCAsmStreamer::emitCVDefRangeDirective(
     ArrayRef<std::pair<const MCSymbol *, const MCSymbol *>> Ranges,
-    codeview::DefRangeRegisterRelHeader DRHdr) {
+    codeview::DefRangeRegisterRelHeader DRHdr, bool IsPSB) {
   PrintCVDefRangePrefix(Ranges);
   OS << ", reg_rel, ";
   OS << DRHdr.Register << ", " << DRHdr.Flags << ", "
@@ -1858,7 +1869,7 @@ void MCAsmStreamer::emitCVDefRangeDirective(
 
 void MCAsmStreamer::emitCVDefRangeDirective(
     ArrayRef<std::pair<const MCSymbol *, const MCSymbol *>> Ranges,
-    codeview::DefRangeSubfieldRegisterHeader DRHdr) {
+    codeview::DefRangeSubfieldRegisterHeader DRHdr, bool IsPSB) {
   PrintCVDefRangePrefix(Ranges);
   OS << ", subfield_reg, ";
   OS << DRHdr.Register << ", " << DRHdr.OffsetInParent;
@@ -1867,7 +1878,7 @@ void MCAsmStreamer::emitCVDefRangeDirective(
 
 void MCAsmStreamer::emitCVDefRangeDirective(
     ArrayRef<std::pair<const MCSymbol *, const MCSymbol *>> Ranges,
-    codeview::DefRangeRegisterHeader DRHdr) {
+    codeview::DefRangeRegisterHeader DRHdr, bool IsPSB) {
   PrintCVDefRangePrefix(Ranges);
   OS << ", reg, ";
   OS << DRHdr.Register;
@@ -1876,24 +1887,25 @@ void MCAsmStreamer::emitCVDefRangeDirective(
 
 void MCAsmStreamer::emitCVDefRangeDirective(
     ArrayRef<std::pair<const MCSymbol *, const MCSymbol *>> Ranges,
-    codeview::DefRangeFramePointerRelHeader DRHdr) {
+    codeview::DefRangeFramePointerRelHeader DRHdr, bool IsPSB) {
   PrintCVDefRangePrefix(Ranges);
   OS << ", frame_ptr_rel, ";
   OS << DRHdr.Offset;
   EmitEOL();
 }
 
-void MCAsmStreamer::emitCVStringTableDirective() {
+void MCAsmStreamer::emitCVStringTableDirective(bool IsPSB) {
   OS << "\t.cv_stringtable";
   EmitEOL();
 }
 
-void MCAsmStreamer::emitCVFileChecksumsDirective() {
+void MCAsmStreamer::emitCVFileChecksumsDirective(bool IsPSB) {
   OS << "\t.cv_filechecksums";
   EmitEOL();
 }
 
-void MCAsmStreamer::emitCVFileChecksumOffsetDirective(unsigned FileNo) {
+void MCAsmStreamer::emitCVFileChecksumOffsetDirective(unsigned FileNo,
+                                                      bool IsPSB) {
   OS << "\t.cv_filechecksumoffset\t" << FileNo;
   EmitEOL();
 }

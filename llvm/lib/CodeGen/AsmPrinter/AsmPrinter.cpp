@@ -180,6 +180,29 @@ static cl::opt<bool> PrintLatency(
     cl::desc("Print instruction latencies as verbose asm comments"), cl::Hidden,
     cl::init(false));
 
+// Flags to control CodeView debug section emission and PDB/PSB file creation.
+static cl::opt<bool> EmitCodeViewSections(
+    "emit-codeview-sections",
+    cl::desc("Emit standard CodeView debug sections (.debug$S, .debug$T)"),
+    cl::Hidden, cl::init(true));
+
+static cl::opt<bool> EmitPSBSections(
+    "emit-psb-sections",
+    cl::desc("Emit PSB debug sections (.psb$S, .psb$T) with alternate magic"),
+    cl::Hidden, cl::init(true));
+
+cl::opt<bool> CreatePDB(
+    "create-pdb",
+    cl::desc("Create PDB file during linking (passed to linker)"),
+    cl::Hidden, cl::init(true));
+
+cl::opt<bool> CreatePSB(
+    "create-psb",
+    cl::desc("Create PSB file during linking (passed to linker)"),
+    cl::Hidden, cl::init(true));
+
+extern cl::opt<bool> EmitBBHash;
+
 STATISTIC(EmittedInsts, "Number of machine instrs printed");
 
 char AsmPrinter::ID = 0;
@@ -569,8 +592,14 @@ bool AsmPrinter::doInitialization(Module &M) {
     // info is disabled.
     if ((TM.getTargetTriple().isOSWindows() &&
          M.getNamedMetadata("llvm.dbg.cu")) ||
-        (TM.getTargetTriple().isUEFI() && EmitCodeView))
-      Handlers.push_back(std::make_unique<CodeViewDebug>(this));
+        (TM.getTargetTriple().isUEFI() && EmitCodeView)) {
+      // Emit standard CodeView debug sections (.debug$S, .debug$T)
+      if (EmitCodeViewSections)
+        Handlers.push_back(std::make_unique<CodeViewDebug>(this));
+      // Also emit duplicate PSB sections (.psb$S, .psb$T) with alternate magic
+      if (EmitPSBSections)
+        Handlers.push_back(std::make_unique<CodeViewDebug>(this, /*EmitPSBSections=*/true));
+    }
     if (!EmitCodeView || M.getDwarfVersion()) {
       if (hasDebugInfo()) {
         DD = new DwarfDebug(this);

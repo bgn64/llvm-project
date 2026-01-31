@@ -747,13 +747,19 @@ ArrayRef<uint8_t> SectionChunk::consumeDebugMagic(ArrayRef<uint8_t> data,
   if (data.size() < 4)
     fatal("the section is too short: " + sectionName);
 
-  if (!sectionName.starts_with(".debug$"))
+  if (!sectionName.starts_with(".debug$") && !sectionName.starts_with(".psb$"))
     fatal("invalid section: " + sectionName);
 
   uint32_t magic = support::endian::read32le(data.data());
-  uint32_t expectedMagic = sectionName == ".debug$H"
-                               ? DEBUG_HASHES_SECTION_MAGIC
-                               : DEBUG_SECTION_MAGIC;
+  uint32_t expectedMagic;
+  if (sectionName == ".debug$H")
+    expectedMagic = DEBUG_HASHES_SECTION_MAGIC;
+  else if (sectionName == ".psb$H")
+    expectedMagic = PSB_HASHES_SECTION_MAGIC;
+  else if (sectionName.starts_with(".psb$"))
+    expectedMagic = PSB_SECTION_MAGIC;
+  else
+    expectedMagic = DEBUG_SECTION_MAGIC;
   if (magic != expectedMagic) {
     warn("ignoring section " + sectionName + " with unrecognized magic 0x" +
          utohexstr(magic));
