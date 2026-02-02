@@ -276,8 +276,6 @@ MCDwarfFrameInfo *MCStreamer::getCurrentDwarfFrameInfo() {
 bool MCStreamer::emitCVFileDirective(unsigned FileNo, StringRef Filename,
                                      ArrayRef<uint8_t> Checksum,
                                      unsigned ChecksumKind, bool IsPSB) {
-  llvm::outs() << "[MCStreamer] emitCVFileDirective called, IsPSB=" << IsPSB 
-               << ", FileNo=" << FileNo << ", Filename=" << Filename << "\n";
   return getContext().getCVContext(IsPSB).addFile(*this, FileNo, Filename,
                                                   Checksum, ChecksumKind);
 }

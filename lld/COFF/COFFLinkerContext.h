@@ -64,13 +64,22 @@ public:
 
   MergeChunk *mergeChunkInstances[Log2MaxSectionAlignment + 1] = {};
 
-  /// All sources of type information in the program.
+  /// All sources of type information in the program (for PDB).
   std::vector<TpiSource *> tpiSourceList;
 
   void addTpiSource(TpiSource *tpi) { tpiSourceList.push_back(tpi); }
 
+  /// All sources of type information for PSB (separate from PDB).
+  std::vector<TpiSource *> psbTpiSourceList;
+
+  void addPsbTpiSource(TpiSource *tpi) { psbTpiSourceList.push_back(tpi); }
+
   std::map<llvm::codeview::GUID, TpiSource *> typeServerSourceMappings;
   std::map<uint32_t, TpiSource *> precompSourceMappings;
+
+  /// PSB-specific type server and precomp mappings (separate from PDB).
+  std::map<llvm::codeview::GUID, TpiSource *> psbTypeServerSourceMappings;
+  std::map<uint32_t, TpiSource *> psbPrecompSourceMappings;
 
   /// List of all output sections. After output sections are finalized, this
   /// can be indexed by getOutputSection.

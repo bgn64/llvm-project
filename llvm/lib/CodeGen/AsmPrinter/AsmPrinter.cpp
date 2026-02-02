@@ -584,21 +584,32 @@ bool AsmPrinter::doInitialization(Module &M) {
         InlineAsm::AsmDialect(TM.getMCAsmInfo()->getAssemblerDialect()));
     OutStreamer->AddComment("End of file scope inline assembly");
     OutStreamer->addBlankLine();
-  }
+  } 
 
   if (MAI->doesSupportDebugInformation()) {
     bool EmitCodeView = M.getCodeViewFlag();
+    llvm::outs() << "[ASM DEBUG] doesSupportDebugInformation=true, EmitCodeView=" << EmitCodeView << "\n";
+    llvm::outs() << "[ASM DEBUG] EmitCodeViewSections=" << EmitCodeViewSections << ", EmitPSBSections=" << EmitPSBSections << "\n";
+    llvm::outs().flush();
     // On Windows targets, emit minimal CodeView compiler info even when debug
     // info is disabled.
     if ((TM.getTargetTriple().isOSWindows() &&
          M.getNamedMetadata("llvm.dbg.cu")) ||
         (TM.getTargetTriple().isUEFI() && EmitCodeView)) {
+      llvm::outs() << "[ASM DEBUG] Creating CodeView handlers...\n";
+      llvm::outs().flush();
       // Emit standard CodeView debug sections (.debug$S, .debug$T)
-      if (EmitCodeViewSections)
+      if (EmitCodeViewSections) {
+        llvm::outs() << "[ASM DEBUG] Creating standard CodeViewDebug handler\n";
+        llvm::outs().flush();
         Handlers.push_back(std::make_unique<CodeViewDebug>(this));
+      }
       // Also emit duplicate PSB sections (.psb$S, .psb$T) with alternate magic
-      if (EmitPSBSections)
+      if (EmitPSBSections) {
+        llvm::outs() << "[ASM DEBUG] Creating PSB CodeViewDebug handler\n";
+        llvm::outs().flush();
         Handlers.push_back(std::make_unique<CodeViewDebug>(this, /*EmitPSBSections=*/true));
+      }
     }
     if (!EmitCodeView || M.getDwarfVersion()) {
       if (hasDebugInfo()) {

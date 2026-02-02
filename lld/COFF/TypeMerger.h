@@ -27,9 +27,18 @@ struct GHashState;
 
 class TypeMerger {
 public:
-  TypeMerger(COFFLinkerContext &ctx, llvm::BumpPtrAllocator &alloc);
+  TypeMerger(COFFLinkerContext &ctx, llvm::BumpPtrAllocator &alloc,
+             bool forPsb = false);
 
   ~TypeMerger();
+
+  /// Whether this TypeMerger is for PSB (true) or PDB (false).
+  bool isForPsb() const { return forPsb; }
+
+  /// Get the TpiSource list for this merger (PDB or PSB).
+  std::vector<TpiSource *> &getTpiSourceList() {
+    return forPsb ? ctx.psbTpiSourceList : ctx.tpiSourceList;
+  }
 
   /// Get the type table or the global type table if /DEBUG:GHASH is enabled.
   inline llvm::codeview::TypeCollection &getTypeTable() {
@@ -77,6 +86,7 @@ private:
   void clearGHashes();
 
   COFFLinkerContext &ctx;
+  bool forPsb = false;
 };
 
 } // namespace lld::coff

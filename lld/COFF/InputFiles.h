@@ -197,6 +197,11 @@ public:
   // if we are not producing a PDB.
   llvm::pdb::DbiModuleDescriptorBuilder *moduleDBI = nullptr;
 
+  // Pointer to the PSB module descriptor builder. This is separate from
+  // moduleDBI to allow independent PDB and PSB generation. Will be null if we
+  // are not producing a PSB.
+  llvm::pdb::DbiModuleDescriptorBuilder *psbModuleDBI = nullptr;
+
   const coff_section *addrsigSec = nullptr;
 
   const coff_section *callgraphSec = nullptr;
@@ -212,11 +217,20 @@ public:
   // Whether the object was already merged into the final PDB.
   bool mergedIntoPDB = false;
 
+  // Whether the object was already merged into the final PSB.
+  bool mergedIntoPSB = false;
+
   // If the OBJ has a .debug$T stream, this tells how it will be handled.
   TpiSource *debugTypesObj = nullptr;
 
+  // PSB-specific TpiSource for .psb$T stream processing (separate from PDB).
+  TpiSource *psbDebugTypesObj = nullptr;
+
   // The .debug$P or .debug$T section data if present. Empty otherwise.
   ArrayRef<uint8_t> debugTypes;
+
+  // The .psb$P or .psb$T section data if present. Empty otherwise.
+  ArrayRef<uint8_t> psbDebugTypes;
 
   std::optional<std::pair<StringRef, uint32_t>>
   getVariableLocation(StringRef var);
@@ -236,6 +250,7 @@ private:
   void initializeSymbols();
   void initializeFlags();
   void initializeDependencies();
+  void initializeTpiSource(COFFLinkerContext &ctx, bool forPsb);
   void initializeECThunks();
 
   SectionChunk *
@@ -341,6 +356,9 @@ public:
 
   // If the PDB has a .debug$T stream, this tells how it will be handled.
   TpiSource *debugTypesObj = nullptr;
+
+  // PSB-specific TpiSource (separate from PDB).
+  TpiSource *psbDebugTypesObj = nullptr;
 };
 
 // This type represents import library members that contain DLL names

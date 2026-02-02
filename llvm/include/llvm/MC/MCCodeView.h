@@ -144,10 +144,14 @@ struct MCCVFunctionInfo {
 /// Holds state from .cv_file and .cv_loc directives for later emission.
 class CodeViewContext {
 public:
-  CodeViewContext(MCContext *MCCtx) : MCCtx(MCCtx) {}
+  CodeViewContext(MCContext *MCCtx, bool IsPSB = false) 
+      : MCCtx(MCCtx), IsPSB(IsPSB) {}
 
   CodeViewContext &operator=(const CodeViewContext &other) = delete;
   CodeViewContext(const CodeViewContext &other) = delete;
+  
+  /// Returns true if this is a PSB context (as opposed to regular CodeView).
+  bool isPSB() const { return IsPSB; }
 
   void finish();
 
@@ -226,6 +230,9 @@ public:
 
 private:
   MCContext *MCCtx;
+  
+  /// Whether this is a PSB context (as opposed to regular CodeView).
+  bool IsPSB = false;
 
   /// Map from string to string table offset.
   StringMap<unsigned> StringTable;

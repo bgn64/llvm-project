@@ -1098,14 +1098,12 @@ void MCContext::finalizeDwarfSections(MCStreamer &MCOS) {
 CodeViewContext &MCContext::getCVContext(bool IsPSB) {
   if (IsPSB) {
     if (!PSBContext) {
-      PSBContext.reset(new CodeViewContext(this));
-      llvm::outs() << "[MCContext] Created new PSBContext at " << (void*)PSBContext.get() << "\n";
+      PSBContext.reset(new CodeViewContext(this, /*IsPSB=*/true));
     }
     return *PSBContext;
   }
   if (!CVContext) {
-    CVContext.reset(new CodeViewContext(this));
-    llvm::outs() << "[MCContext] Created new CVContext at " << (void*)CVContext.get() << "\n";
+    CVContext.reset(new CodeViewContext(this, /*IsPSB=*/false));
   }
   return *CVContext;
 }

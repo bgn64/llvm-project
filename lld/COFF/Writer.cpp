@@ -812,20 +812,23 @@ void Writer::run() {
 
   if (!ctx.config.pdbPath.empty() && ctx.config.debug) {
     assert(buildId);
+    llvm::outs() << "[DEBUG] PDB/PSB creation: enablePDB=" << ctx.config.enablePDB 
+                 << ", enablePSB=" << ctx.config.enablePSB << "\n";
+    llvm::outs().flush();
     // Create PDB file if enabled
     if (ctx.config.enablePDB) {
-      llvm::outs() << "[DEBUG] Before writing PDB file\n";
+      llvm::outs() << "[DEBUG] Creating PDB file...\n";
       llvm::outs().flush();
       createPDB(ctx, sectionTable, buildId->buildId, /*createPSB=*/false);
-      llvm::outs() << "[DEBUG] After writing PDB file\n";
+      llvm::outs() << "[DEBUG] PDB file creation completed\n";
       llvm::outs().flush();
     }
     // Create PSB file if enabled
     if (ctx.config.enablePSB) {
-      llvm::outs() << "[DEBUG] Before writing PSB file\n";
+      llvm::outs() << "[DEBUG] Creating PSB file...\n";
       llvm::outs().flush();
       createPDB(ctx, sectionTable, buildId->buildId, /*createPSB=*/true);
-      llvm::outs() << "[DEBUG] After writing PSB file\n";
+      llvm::outs() << "[DEBUG] PSB file creation completed\n";
       llvm::outs().flush();
     }
   }

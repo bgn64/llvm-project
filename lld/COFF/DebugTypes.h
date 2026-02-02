@@ -40,7 +40,7 @@ class TpiSource {
 public:
   enum TpiKind : uint8_t { Regular, PCH, UsingPCH, PDB, PDBIpi, UsingPDB };
 
-  TpiSource(COFFLinkerContext &ctx, TpiKind k, ObjFile *f);
+  TpiSource(COFFLinkerContext &ctx, TpiKind k, ObjFile *f, bool forPsb = false);
   virtual ~TpiSource();
 
   /// Produce a mapping from the type and item indices used in the object
@@ -109,9 +109,16 @@ public:
     return ghashIdx == endPrecompIdx;
   }
 
+  /// Get the debug types data for this source (from debugTypes or psbDebugTypes
+  /// depending on forPsb).
+  ArrayRef<uint8_t> getDebugTypes() const;
+
   const TpiKind kind;
   bool ownedGHashes = true;
   uint32_t tpiSrcIdx = 0;
+
+  /// Whether this TpiSource is for PSB (true) or PDB (false).
+  bool forPsb = false;
 
   /// The index (zero based, not 0x1000-based) of the LF_ENDPRECOMP record in
   /// this object, if one exists. This is the all ones value otherwise. It is
@@ -163,14 +170,19 @@ public:
   uint64_t nbTypeRecordsBytes = 0;
 };
 
-TpiSource *makeTpiSource(COFFLinkerContext &ctx, ObjFile *f);
+TpiSource *makeTpiSource(COFFLinkerContext &ctx, ObjFile *f,
+                         bool forPsb = false);
 TpiSource *makeTypeServerSource(COFFLinkerContext &ctx,
-                                PDBInputFile *pdbInputFile);
+                                PDBInputFile *pdbInputFile,
+                                bool forPsb = false);
 TpiSource *makeUseTypeServerSource(COFFLinkerContext &ctx, ObjFile *file,
-                                   llvm::codeview::TypeServer2Record ts);
-TpiSource *makePrecompSource(COFFLinkerContext &ctx, ObjFile *file);
+                                   llvm::codeview::TypeServer2Record ts,
+                                   bool forPsb = false);
+TpiSource *makePrecompSource(COFFLinkerContext &ctx, ObjFile *file,
+                             bool forPsb = false);
 TpiSource *makeUsePrecompSource(COFFLinkerContext &ctx, ObjFile *file,
-                                llvm::codeview::PrecompRecord ts);
+                                llvm::codeview::PrecompRecord ts,
+                                bool forPsb = false);
 
 } // namespace lld::coff
 

@@ -73,5 +73,5 @@ pythonenv*
 /clang/utils/analyzer/projects/*/RefScanBuildResults
 # automodapi puts generated documentation files here.
 
-/install/
+/install*/
 /lldb/docs/python_api/

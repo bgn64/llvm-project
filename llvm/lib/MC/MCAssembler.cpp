@@ -1039,13 +1039,15 @@ bool MCAssembler::relaxDwarfCallFrameFragment(MCDwarfCallFrameFragment &DF) {
 
 bool MCAssembler::relaxCVInlineLineTable(MCCVInlineLineTableFragment &F) {
   unsigned OldSize = F.getContents().size();
-  getContext().getCVContext().encodeInlineLineTable(*this, F);
+  bool IsPSB = F.getParent()->getName().starts_with(".psb$");
+  getContext().getCVContext(IsPSB).encodeInlineLineTable(*this, F);
   return OldSize != F.getContents().size();
 }
 
 bool MCAssembler::relaxCVDefRange(MCCVDefRangeFragment &F) {
   unsigned OldSize = F.getContents().size();
-  getContext().getCVContext().encodeDefRange(*this, F);
+  bool IsPSB = F.getParent()->getName().starts_with(".psb$");
+  getContext().getCVContext(IsPSB).encodeDefRange(*this, F);
   return OldSize != F.getContents().size();
 }
 
