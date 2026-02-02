@@ -197,7 +197,12 @@ TpiSource::~TpiSource() {
 ArrayRef<uint8_t> TpiSource::getDebugTypes() const {
   if (!file)
     return {};
-  return forPsb ? file->psbDebugTypes : file->debugTypes;
+  if (forPsb) {
+    // For PSB: prefer psbDebugTypes but fall back to debugTypes if PSB type
+    // data is not available (e.g., when the file only has CodeView sections).
+    return file->psbDebugTypes.empty() ? file->debugTypes : file->psbDebugTypes;
+  }
+  return file->debugTypes;
 }
 
 TpiSource *lld::coff::makeTpiSource(COFFLinkerContext &ctx, ObjFile *file,

@@ -167,10 +167,44 @@ private:
   /// file (using .debug$* sections).
   bool createPSB = false;
 
-  /// Get the debug symbols section name based on createPSB flag.
+  /// Check if a file has any PSB sections (.psb$S or .psb$F).
+  bool hasPSBSections(ObjFile *file) const {
+    for (SectionChunk *debugChunk : file->getDebugChunks()) {
+      if (!debugChunk->live || debugChunk->getSize() == 0)
+        continue;
+      StringRef name = debugChunk->getSectionName();
+      if (name == ".psb$S" || name == ".psb$F")
+        return true;
+    }
+    return false;
+  }
+
+  /// Get the debug symbols section name for a file.
+  /// For PSB: prefers .psb$S if available, falls back to .debug$S.
+  /// For PDB: always uses .debug$S.
+  StringRef getDebugSNameForFile(ObjFile *file) const {
+    if (!createPSB)
+      return ".debug$S";
+    // For PSB, prefer .psb$S but fallback to .debug$S
+    return hasPSBSections(file) ? ".psb$S" : ".debug$S";
+  }
+
+  /// Get the debug FPO section name for a file.
+  /// For PSB: prefers .psb$F if available, falls back to .debug$F.
+  /// For PDB: always uses .debug$F.
+  StringRef getDebugFNameForFile(ObjFile *file) const {
+    if (!createPSB)
+      return ".debug$F";
+    // For PSB, prefer .psb$F but fallback to .debug$F
+    return hasPSBSections(file) ? ".psb$F" : ".debug$F";
+  }
+
+  /// Get the debug symbols section name based on createPSB flag (for generic
+  /// use where no file context is available).
   StringRef getDebugSName() const { return createPSB ? ".psb$S" : ".debug$S"; }
 
-  /// Get the debug FPO section name based on createPSB flag.
+  /// Get the debug FPO section name based on createPSB flag (for generic
+  /// use where no file context is available).
   StringRef getDebugFName() const { return createPSB ? ".psb$F" : ".debug$F"; }
 
   /// Get the module DBI pointer for a file, using the appropriate field
@@ -187,8 +221,15 @@ private:
 
   /// Get the TpiSource for a file, using the appropriate field based on
   /// whether we're creating a PSB or PDB.
+  /// For PSB: always uses psbDebugTypesObj since it was created for PSB and
+  /// will correctly use getDebugTypes() to fall back to CodeView data if no
+  /// PSB type sections exist.
   TpiSource *getDebugTypesObj(ObjFile *file) const {
-    return createPSB ? file->psbDebugTypesObj : file->debugTypesObj;
+    if (!createPSB)
+      return file->debugTypesObj;
+    // For PSB, use psbDebugTypesObj - it will use getDebugTypes() internally
+    // which falls back to debugTypes if psbDebugTypes is empty.
+    return file->psbDebugTypesObj;
   }
 };
 
@@ -206,8 +247,9 @@ class DebugSHandler {
   COFFLinkerContext &ctx;
   PDBLinker &linker;
 
-  /// Get the debug symbols section name based on linker's createPSB flag.
-  StringRef getDebugSName() const { return linker.getDebugSName(); }
+  /// Get the debug symbols section name for the file being processed.
+  /// For PSB: prefers .psb$S if available, falls back to .debug$S.
+  StringRef getDebugSName() const { return linker.getDebugSNameForFile(&file); }
 
   /// Get the module DBI for the file being processed.
   llvm::pdb::DbiModuleDescriptorBuilder *getModuleDBI() const {
@@ -690,8 +732,10 @@ Error PDBLinker::writeAllModuleSymbolRecords(ObjFile *file,
   std::vector<uint8_t> storage;
   SmallVector<uint32_t, 4> scopes;
 
-  // Visit all live .debug$S sections a second time, and write them to the PDB.
-  StringRef debugSName = createPSB ? ".psb$S" : ".debug$S";
+  // Visit all live .debug$S/.psb$S sections a second time, and write them to
+  // the PDB/PSB. For PSB: prefer .psb$S but fall back to .debug$S if no PSB
+  // sections exist.
+  StringRef debugSName = getDebugSNameForFile(file);
   for (SectionChunk *debugChunk : file->getDebugChunks()) {
     if (!debugChunk->live || debugChunk->getSize() == 0 ||
         debugChunk->getSectionName() != debugSName)
@@ -921,8 +965,16 @@ Error UnrelocatedDebugSubsection::commit(BinaryStreamWriter &writer) const {
   // Remap type indices in inlinee line records in place. Skip the remapping if
   // there is no type source info.
   // Use the appropriate TpiSource based on whether we're creating PSB or PDB.
-  TpiSource *source = forPsb ? debugChunk->file->psbDebugTypesObj 
-                             : debugChunk->file->debugTypesObj;
+  // For PSB: prefer psbDebugTypesObj if PSB sections exist for this file,
+  // otherwise fallback to debugTypesObj.
+  TpiSource *source = nullptr;
+  if (forPsb) {
+    // For PSB, use psbDebugTypesObj - it will use getDebugTypes() internally
+    // which falls back to debugTypes if psbDebugTypes is empty.
+    source = debugChunk->file->psbDebugTypesObj;
+  } else {
+    source = debugChunk->file->debugTypesObj;
+  }
   if (kind() == DebugSubsectionKind::InlineeLines && source) {
     DebugInlineeLinesSubsectionRef inlineeLines;
     BinaryStreamReader storageReader(relocatedBytes, llvm::endianness::little);
@@ -1095,8 +1147,10 @@ void PDBLinker::addDebugSymbols(TpiSource *source) {
   pdb::DbiStreamBuilder &dbiBuilder = builder.getDbiBuilder();
   DebugSHandler dsh(ctx, *this, *source->file);
   // Now do all live .debug$S/.psb$S and .debug$F/.psb$F sections.
-  StringRef debugSName = getDebugSName();
-  StringRef debugFName = getDebugFName();
+  // For PSB: prefer .psb$S/.psb$F but fall back to .debug$S/.debug$F if no PSB
+  // sections exist.
+  StringRef debugSName = getDebugSNameForFile(source->file);
+  StringRef debugFName = getDebugFNameForFile(source->file);
   
   int debugSCount = 0;
   int debugFCount = 0;

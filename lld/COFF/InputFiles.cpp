@@ -1227,7 +1227,11 @@ void PDBInputFile::parse() {
     loadErrorStr.emplace(toString(expectedInfo.takeError()));
     return;
   }
-  debugTypesObj = makeTypeServerSource(symtab.ctx, this);
+  // Create TpiSource for both PDB and PSB paths.
+  // Type Server PDBs are shared resources - there are no PSB-specific versions,
+  // so the PSB uses the same type data from these PDBs.
+  debugTypesObj = makeTypeServerSource(symtab.ctx, this, /*forPsb=*/false);
+  psbDebugTypesObj = makeTypeServerSource(symtab.ctx, this, /*forPsb=*/true);
 }
 
 // Used only for DWARF debug info, which is not common (except in MinGW

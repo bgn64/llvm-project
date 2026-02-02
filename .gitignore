@@ -74,4 +74,5 @@ pythonenv*
 # automodapi puts generated documentation files here.
 
 /install*/
+/foo/
 /lldb/docs/python_api/
