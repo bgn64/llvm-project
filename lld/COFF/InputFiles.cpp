@@ -1031,7 +1031,6 @@ void ObjFile::initializeDependencies() {
 }
 
 void ObjFile::initializeTpiSource(COFFLinkerContext &ctx, bool forPsb) {
-  const char *fileType = forPsb ? "PSB" : "PDB";
   // Section name prefixes for PDB vs PSB.
   const char *pchSection = forPsb ? ".psb$P" : ".debug$P";
   const char *typeSection = forPsb ? ".psb$T" : ".debug$T";
@@ -1050,25 +1049,11 @@ void ObjFile::initializeTpiSource(COFFLinkerContext &ctx, bool forPsb) {
   TpiSource *&typesObj = forPsb ? psbDebugTypesObj : debugTypesObj;
   ArrayRef<uint8_t> &types = forPsb ? psbDebugTypes : debugTypes;
 
-  // Log for spgo_test files only to reduce noise
-  bool shouldLog = getName().contains("spgo_test");
-  if (shouldLog) {
-    llvm::outs() << "[" << fileType << " INIT] initializeTpiSource for " << getName() << "\n";
-    llvm::outs() << "[" << fileType << " INIT]   Looking for " << pchSection << " or " << typeSection << "\n";
-    llvm::outs() << "[" << fileType << " INIT]   data.size() = " << data.size() << ", isPCH = " << isPCH << "\n";
-    llvm::outs() << "[" << fileType << " INIT]   debugChunks.size() = " << debugChunks.size() << "\n";
-    llvm::outs().flush();
-  }
-
   // symbols but no types, make a plain, empty TpiSource anyway, because it
   // simplifies adding the symbols later.
   if (data.empty()) {
     if (!debugChunks.empty()) {
       typesObj = makeTpiSource(ctx, this, forPsb);
-      if (shouldLog) {
-        llvm::outs() << "[" << fileType << " INIT]   Created empty TpiSource (no type data but has debug chunks)\n";
-        llvm::outs().flush();
-      }
     }
     return;
   }
@@ -1080,10 +1065,6 @@ void ObjFile::initializeTpiSource(COFFLinkerContext &ctx, bool forPsb) {
   cantFail(reader.readArray(typeArray, reader.getLength()));
   CVTypeArray::Iterator firstType = typeArray.begin();
   if (firstType == typeArray.end()) {
-    if (shouldLog) {
-      llvm::outs() << "[" << fileType << " INIT]   Type array is empty, returning\n";
-      llvm::outs().flush();
-    }
     return;
   }
 
@@ -1093,10 +1074,6 @@ void ObjFile::initializeTpiSource(COFFLinkerContext &ctx, bool forPsb) {
   // This object file is a PCH file that others will depend on.
   if (isPCH) {
     typesObj = makePrecompSource(ctx, this, forPsb);
-    if (shouldLog) {
-      llvm::outs() << "[" << fileType << " INIT]   Created PrecompSource (PCH)\n";
-      llvm::outs().flush();
-    }
     return;
   }
 
@@ -1105,10 +1082,6 @@ void ObjFile::initializeTpiSource(COFFLinkerContext &ctx, bool forPsb) {
     TypeServer2Record ts = cantFail(
         TypeDeserializer::deserializeAs<TypeServer2Record>(firstType->data()));
     typesObj = makeUseTypeServerSource(ctx, this, ts, forPsb);
-    if (shouldLog) {
-      llvm::outs() << "[" << fileType << " INIT]   Created UseTypeServerSource (LF_TYPESERVER2)\n";
-      llvm::outs().flush();
-    }
     if (!forPsb) {
       // Only enqueue PDB file for the primary (.debug$*) path.
       enqueuePdbFile(ts.getName(), this);
@@ -1126,10 +1099,6 @@ void ObjFile::initializeTpiSource(COFFLinkerContext &ctx, bool forPsb) {
     if (precomp.Signature)
       pchSignature = precomp.Signature;
     typesObj = makeUsePrecompSource(ctx, this, precomp, forPsb);
-    if (shouldLog) {
-      llvm::outs() << "[" << fileType << " INIT]   Created UsePrecompSource (LF_PRECOMP)\n";
-      llvm::outs().flush();
-    }
     // Drop the LF_PRECOMP record from the input stream.
     types = types.drop_front(firstType->RecordData.size());
     return;
@@ -1137,12 +1106,6 @@ void ObjFile::initializeTpiSource(COFFLinkerContext &ctx, bool forPsb) {
 
   // This is a plain old object file.
   typesObj = makeTpiSource(ctx, this, forPsb);
-  if (shouldLog) {
-    llvm::outs() << "[" << fileType << " INIT]   Created regular TpiSource\n";
-    llvm::outs() << "[" << fileType << " INIT]   After creation: " << (forPsb ? "psbTpiSourceList" : "tpiSourceList") 
-                 << ".size() = " << (forPsb ? ctx.psbTpiSourceList.size() : ctx.tpiSourceList.size()) << "\n";
-    llvm::outs().flush();
-  }
 }
 
 // The casing of the PDB path stamped in the OBJ can differ from the actual path

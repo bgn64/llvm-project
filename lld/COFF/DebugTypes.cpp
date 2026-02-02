@@ -1040,10 +1040,6 @@ public:
     const std::vector<TpiSource *> &sourceList = 
         isPSB ? ctx.psbTpiSourceList : ctx.tpiSourceList;
     if (idx >= sourceList.size()) {
-      llvm::outs() << "[GHashCell] ERROR: tpiSrcIdx " << idx 
-                   << " >= " << (isPSB ? "psbTpiSourceList" : "tpiSourceList")
-                   << ".size() " << sourceList.size() << "\n";
-      llvm::outs().flush();
       report_fatal_error("GHashCell::getGHash: tpiSrcIdx out of bounds");
     }
     return sourceList[idx]->ghashes[getGHashIdx()];
@@ -1131,28 +1127,16 @@ TypeMerger::TypeMerger(COFFLinkerContext &c, llvm::BumpPtrAllocator &alloc,
 TypeMerger::~TypeMerger() = default;
 
 void TypeMerger::mergeTypesWithGHash() {
-  const char *fileType = forPsb ? "PSB" : "PDB";
-  llvm::outs() << "[" << fileType << "] mergeTypesWithGHash() entered\n";
-  llvm::outs().flush();
-  
   std::vector<TpiSource *> &tpiSources = getTpiSourceList();
-  llvm::outs() << "[" << fileType << "] mergeTypesWithGHash: tpiSources.size() = " << tpiSources.size() << "\n";
-  llvm::outs().flush();
   
   // Load ghashes. Do type servers and PCH objects first.
   {
     llvm::TimeTraceScope timeScope("Load GHASHes");
     ScopedTimer t1(ctx.loadGHashTimer);
-    llvm::outs() << "[" << fileType << "] Loading GHashes from " << dependencySources.size() << " dependency sources\n";
-    llvm::outs().flush();
     parallelForEach(dependencySources,
                     [&](TpiSource *source) { source->loadGHashes(); });
-    llvm::outs() << "[" << fileType << "] Loading GHashes from " << objectSources.size() << " object sources\n";
-    llvm::outs().flush();
     parallelForEach(objectSources,
                     [&](TpiSource *source) { source->loadGHashes(); });
-    llvm::outs() << "[" << fileType << "] GHashes loaded\n";
-    llvm::outs().flush();
   }
 
   llvm::TimeTraceScope timeScope("Merge types (GHASH)");
@@ -1169,18 +1153,12 @@ void TypeMerger::mergeTypesWithGHash() {
   size_t tableSize = 0;
   for (TpiSource *source : tpiSources)
     tableSize += source->ghashes.size();
-  
-  llvm::outs() << "[" << fileType << "] Total ghashes tableSize = " << tableSize << "\n";
-  llvm::outs().flush();
 
   // Cap the table size so that we can use 32-bit cell indices. Type indices are
   // also 32-bit, so this is an inherent PDB file format limit anyway.
   tableSize =
       std::min(size_t(INT32_MAX) - TypeIndex::FirstNonSimpleIndex, tableSize);
   ghashState.table.init(static_cast<uint32_t>(tableSize));
-
-  llvm::outs() << "[" << fileType << "] About to insert ghashes in parallel, tpiSources.size() = " << tpiSources.size() << "\n";
-  llvm::outs().flush();
 
   // Insert ghashes in parallel. During concurrent insertion, we cannot observe
   // the contents of the hash table cell, but we can remember the insertion
@@ -1272,44 +1250,27 @@ void TypeMerger::mergeTypesWithGHash() {
 }
 
 void TypeMerger::sortDependencies() {
-  const char *fileType = forPsb ? "PSB" : "PDB";
-  llvm::outs() << "[" << fileType << "] sortDependencies() entered\n";
-  llvm::outs().flush();
-  
   // Order dependencies first, but preserve the existing order.
   std::vector<TpiSource *> deps;
   std::vector<TpiSource *> objs;
   std::vector<TpiSource *> &sourceList = getTpiSourceList();
-  llvm::outs() << "[" << fileType << "] sortDependencies: sourceList.size() = " << sourceList.size() << "\n";
-  llvm::outs().flush();
   
   for (TpiSource *s : sourceList) {
     if (!s) {
-      llvm::outs() << "[" << fileType << "] ERROR: null TpiSource in sourceList!\n";
-      llvm::outs().flush();
       continue;
     }
     (s->isDependency() ? deps : objs).push_back(s);
   }
-  llvm::outs() << "[" << fileType << "] sortDependencies: deps.size() = " << deps.size() 
-               << ", objs.size() = " << objs.size() << "\n";
-  llvm::outs().flush();
   
   uint32_t numDeps = deps.size();
   uint32_t numObjs = objs.size();
   sourceList = std::move(deps);
   sourceList.insert(sourceList.end(), objs.begin(), objs.end());
-  llvm::outs() << "[" << fileType << "] sortDependencies: after merge, sourceList.size() = " << sourceList.size() << "\n";
-  llvm::outs().flush();
   
   for (uint32_t i = 0, e = sourceList.size(); i < e; ++i)
     sourceList[i]->tpiSrcIdx = i;
   dependencySources = ArrayRef(sourceList.data(), numDeps);
   objectSources = ArrayRef(sourceList.data() + numDeps, numObjs);
-  llvm::outs() << "[" << fileType << "] sortDependencies: dependencySources.size() = " << dependencySources.size() 
-               << ", objectSources.size() = " << objectSources.size() << "\n";
-  llvm::outs() << "[" << fileType << "] sortDependencies() completed\n";
-  llvm::outs().flush();
 }
 
 /// Given the index into the ghash table for a particular type, return the type

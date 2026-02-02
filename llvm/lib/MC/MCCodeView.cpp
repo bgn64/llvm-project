@@ -96,14 +96,6 @@ bool CodeViewContext::recordFunctionId(unsigned FuncId) {
 bool CodeViewContext::recordInlinedCallSiteId(unsigned FuncId, unsigned IAFunc,
                                               unsigned IAFile, unsigned IALine,
                                               unsigned IACol) {
-  llvm::outs() << "[CV INLINEID] recordInlinedCallSiteId: IsPSB=" << IsPSB
-               << ", FuncId=" << FuncId
-               << ", IAFunc=" << IAFunc
-               << ", IAFile=" << IAFile
-               << ", IALine=" << IALine
-               << ", IACol=" << IACol << "\n";
-  llvm::outs().flush();
-
   if (FuncId >= Functions.size())
     Functions.resize(FuncId + 1);
 
@@ -136,18 +128,6 @@ void CodeViewContext::recordCVLoc(MCContext &Ctx, const MCSymbol *Label,
                                   unsigned FunctionId, unsigned FileNo,
                                   unsigned Line, unsigned Column,
                                   bool PrologueEnd, bool IsStmt) {
-  static unsigned RecordCount = 0;
-  if (RecordCount < 100) {  // Limit output
-    llvm::outs() << "[CV RECORD] recordCVLoc #" << RecordCount 
-                 << ": IsPSB=" << IsPSB
-                 << ", FunctionId=" << FunctionId
-                 << ", FileNo=" << FileNo
-                 << ", Line=" << Line
-                 << ", Column=" << Column
-                 << ", Label=" << Label->getName() << "\n";
-    llvm::outs().flush();
-    RecordCount++;
-  }
   addLineEntry(MCCVLoc{
       Label, FunctionId, FileNo, Line, Column, PrologueEnd, IsStmt});
 }
@@ -357,11 +337,6 @@ void CodeViewContext::emitLineTableForFunction(MCObjectStreamer &OS,
                                                unsigned FuncId,
                                                const MCSymbol *FuncBegin,
                                                const MCSymbol *FuncEnd) {
-  llvm::outs() << "[MCCV DEBUG] emitLineTableForFunction, FuncId=" << FuncId << "\n";
-  llvm::outs() << "[MCCV DEBUG]   Files.size()=" << Files.size() << "\n";
-  llvm::outs() << "[MCCV DEBUG]   MCCVLines.size()=" << MCCVLines.size() << "\n";
-  llvm::outs().flush();
-  
   MCContext &Ctx = OS.getContext();
   MCSymbol *LineBegin = Ctx.createTempSymbol("linetable_begin", false),
            *LineEnd = Ctx.createTempSymbol("linetable_end", false);
@@ -374,9 +349,6 @@ void CodeViewContext::emitLineTableForFunction(MCObjectStreamer &OS,
 
   // Actual line info.
   std::vector<MCCVLoc> Locs = getFunctionLineEntries(FuncId);
-  llvm::outs() << "[MCCV DEBUG]   Locs.size()=" << Locs.size() << " for FuncId=" << FuncId << "\n";
-  llvm::outs().flush();
-  
   bool HaveColumns = any_of(Locs, [](const MCCVLoc &LineEntry) {
     return LineEntry.getColumn() != 0;
   });
@@ -386,39 +358,15 @@ void CodeViewContext::emitLineTableForFunction(MCObjectStreamer &OS,
   for (auto I = Locs.begin(), E = Locs.end(); I != E;) {
     // Emit a file segment for the run of locations that share a file id.
     unsigned CurFileNum = I->getFileNum();
-    llvm::outs() << "[MCCV DEBUG]   Processing file segment, CurFileNum=" << CurFileNum << "\n";
-    llvm::outs().flush();
-    
-    if (CurFileNum < 1 || CurFileNum > Files.size()) {
-      llvm::outs() << "[MCCV DEBUG]   ERROR: CurFileNum=" << CurFileNum << " out of range (Files.size()=" << Files.size() << ")!\n";
-      llvm::outs().flush();
-    }
-    
-    // Check StrTab validity
-    unsigned StringOffset = Files[CurFileNum - 1].StringTableOffset;
-    llvm::outs() << "[MCCV DEBUG]   StringTableOffset=" << StringOffset << ", StrTab.size()=" << StrTab.size() << "\n";
-    llvm::outs().flush();
-    
-    if (StringOffset >= StrTab.size()) {
-      llvm::outs() << "[MCCV DEBUG]   ERROR: StringTableOffset=" << StringOffset << " out of range (StrTab.size()=" << StrTab.size() << ")!\n";
-      llvm::outs().flush();
-    }
-    
     auto FileSegEnd =
         std::find_if(I, E, [CurFileNum](const MCCVLoc &Loc) {
           return Loc.getFileNum() != CurFileNum;
         });
     unsigned EntryCount = FileSegEnd - I;
-    llvm::outs() << "[MCCV DEBUG]   About to add comment for file segment\n";
-    llvm::outs().flush();
     OS.AddComment("Segment for file '" +
                   Twine(StrTab[Files[CurFileNum - 1].StringTableOffset]) +
                   "' begins");
-    llvm::outs() << "[MCCV DEBUG]   Comment added successfully\n";
-    llvm::outs().flush();
     OS.emitCVFileChecksumOffsetDirective(CurFileNum, IsPSB);
-    llvm::outs() << "[MCCV DEBUG]   emitCVFileChecksumOffsetDirective completed\n";
-    llvm::outs().flush();
     OS.emitInt32(EntryCount);
     uint32_t SegmentSize = 12;
     SegmentSize += 8 * EntryCount;
@@ -484,14 +432,6 @@ void CodeViewContext::emitInlineLineTableForFunction(MCObjectStreamer &OS,
                                                      unsigned SourceLineNum,
                                                      const MCSymbol *FnStartSym,
                                                      const MCSymbol *FnEndSym) {
-  llvm::outs() << "[CV INLINETABLE] emitInlineLineTableForFunction: IsPSB=" << IsPSB
-               << ", PrimaryFunctionId=" << PrimaryFunctionId
-               << ", SourceFileId=" << SourceFileId
-               << ", SourceLineNum=" << SourceLineNum
-               << ", Functions.size()=" << Functions.size()
-               << ", MCCVLines.size()=" << MCCVLines.size() << "\n";
-  llvm::outs().flush();
-
   // Create and insert a fragment into the current section that will be encoded
   // later.
   auto *F = MCCtx->allocFragment<MCCVInlineLineTableFragment>(
@@ -532,41 +472,15 @@ static unsigned computeLabelDiff(const MCAssembler &Asm, const MCSymbol *Begin,
 
 void CodeViewContext::encodeInlineLineTable(const MCAssembler &Asm,
                                             MCCVInlineLineTableFragment &Frag) {
-  llvm::outs() << "[CV INLINE] encodeInlineLineTable called, IsPSB=" << IsPSB 
-               << ", SiteFuncId=" << Frag.SiteFuncId 
-               << ", StartFileId=" << Frag.StartFileId 
-               << ", StartLineNum=" << Frag.StartLineNum << "\n";
-  llvm::outs().flush();
-  
   size_t LocBegin;
   size_t LocEnd;
   std::tie(LocBegin, LocEnd) = getLineExtentIncludingInlinees(Frag.SiteFuncId);
 
-  llvm::outs() << "[CV INLINE]   LocBegin=" << LocBegin << ", LocEnd=" << LocEnd 
-               << ", total MCCVLines=" << MCCVLines.size() << "\n";
-  llvm::outs().flush();
-
-  if (LocBegin >= LocEnd) {
-    llvm::outs() << "[CV INLINE]   WARNING: LocBegin >= LocEnd, returning early (no annotations)\n";
-    llvm::outs().flush();
+  if (LocBegin >= LocEnd)
     return;
-  }
   ArrayRef<MCCVLoc> Locs = getLinesForExtent(LocBegin, LocEnd);
-  if (Locs.empty()) {
-    llvm::outs() << "[CV INLINE]   WARNING: Locs is empty, returning early (no annotations)\n";
-    llvm::outs().flush();
+  if (Locs.empty())
     return;
-  }
-  
-  llvm::outs() << "[CV INLINE]   Found " << Locs.size() << " MCCVLoc entries for this inline site\n";
-  for (size_t i = 0; i < Locs.size(); ++i) {
-    const MCCVLoc &Loc = Locs[i];
-    llvm::outs() << "[CV INLINE]     Loc[" << i << "]: FuncId=" << Loc.getFunctionId()
-                 << ", FileNum=" << Loc.getFileNum() 
-                 << ", Line=" << Loc.getLine() 
-                 << ", Col=" << Loc.getColumn() << "\n";
-  }
-  llvm::outs().flush();
 
   // Check that the locations are all in the same section.
 #ifndef NDEBUG

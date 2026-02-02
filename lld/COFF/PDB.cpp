@@ -46,7 +46,6 @@
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/Path.h"
-#include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/ScopedPrinter.h"
 #include "llvm/Support/TimeProfiler.h"
 #include <memory>
@@ -693,11 +692,6 @@ void PDBLinker::analyzeSymbolSubsection(
           writeSymbolRecord(debugChunk, sectionContents, sym, alignedSize,
                             nextRelocIndex, storage);
           auto *modDBI = getModuleDBI(file);
-          if (!modDBI) {
-            llvm::outs() << "[" << (createPSB ? "PSB" : "PDB") << "] ERROR: moduleDBI is null for " 
-                         << file->getName() << " when adding global symbol!\n";
-            llvm::outs().flush();
-          }
           addGlobalSymbol(builder.getGsiBuilder(),
                           file->moduleDBI->getModuleIndex(), moduleSymOffset,
                           storage, createPSB);
@@ -1135,7 +1129,6 @@ static ArrayRef<uint8_t> relocateDebugChunk(SectionChunk &debugChunk) {
 }
 
 void PDBLinker::addDebugSymbols(TpiSource *source) {
-  const char *fileType = createPSB ? "PSB" : "PDB";
   // If this TpiSource doesn't have an object file, it must be from a type
   // server PDB. Type server PDBs do not contain symbols, so stop here.
   if (!source->file)
@@ -1152,8 +1145,6 @@ void PDBLinker::addDebugSymbols(TpiSource *source) {
   StringRef debugSName = getDebugSNameForFile(source->file);
   StringRef debugFName = getDebugFNameForFile(source->file);
   
-  int debugSCount = 0;
-  int debugFCount = 0;
   for (SectionChunk *debugChunk : source->file->getDebugChunks()) {
     if (!debugChunk->live || debugChunk->getSize() == 0)
       continue;
@@ -1164,10 +1155,8 @@ void PDBLinker::addDebugSymbols(TpiSource *source) {
       continue;
 
     if (isDebugS) {
-      debugSCount++;
       dsh.handleDebugS(debugChunk);
     } else if (isDebugF) {
-      debugFCount++;
       // Handle old FPO data .debug$F sections. These are relatively rare.
       ArrayRef<uint8_t> relocatedDebugContents =
           relocateDebugChunk(*debugChunk);
@@ -1183,14 +1172,6 @@ void PDBLinker::addDebugSymbols(TpiSource *source) {
         dbiBuilder.addOldFpoData(fd);
     }
   }
-  
-  // Log only for spgo_test.exe.lto.obj to reduce noise
-  if (source->file->getName().contains("spgo_test")) {
-    llvm::outs() << "[" << fileType << "] addDebugSymbols for " << source->file->getName()
-                 << ": found " << debugSCount << " " << debugSName << " sections, "
-                 << debugFCount << " " << debugFName << " sections\n";
-    llvm::outs().flush();
-  }
 
   // Do any post-processing now that all .debug$S sections have been processed.
   dsh.finish();
@@ -1201,17 +1182,8 @@ void PDBLinker::addDebugSymbols(TpiSource *source) {
 // path absolute. If it's an object in an archive, we make the archive path
 // absolute.
 void PDBLinker::createModuleDBI(ObjFile *file) {
-  const char *fileType = createPSB ? "PSB" : "PDB";
-  
   // Get the appropriate moduleDBI field based on whether we're creating PSB or PDB
   auto *&modDBI = getModuleDBI(file);
-  
-  // Log if we're overwriting an existing moduleDBI
-  if (modDBI) {
-    llvm::outs() << "[" << fileType << "] WARNING: Overwriting existing moduleDBI for " 
-                 << file->getName() << " (old=" << (void*)modDBI << ")\n";
-    llvm::outs().flush();
-  }
   
   pdb::DbiStreamBuilder &dbiBuilder = builder.getDbiBuilder();
   SmallString<128> objName;
@@ -1294,63 +1266,34 @@ static pdb::BulkPublic createPublic(COFFLinkerContext &ctx, Defined *def) {
 // Add all object files to the PDB. Merge .debug$T sections into IpiData and
 // TpiData.
 void PDBLinker::addObjectsToPDB() {
-  const char *fileType = createPSB ? "PSB" : "PDB";
-  llvm::outs() << "[" << fileType << "] addObjectsToPDB called\n";
-  llvm::outs() << "[" << fileType << "] Number of objFileInstances: " << ctx.objFileInstances.size() << "\n";
-  llvm::outs().flush();
   {
     llvm::TimeTraceScope timeScope("Add objects to PDB");
     ScopedTimer t1(ctx.addObjectsTimer);
 
     // Create module descriptors
-    llvm::outs() << "[" << fileType << "] Creating module descriptors...\n";
-    llvm::outs().flush();
     for (ObjFile *obj : ctx.objFileInstances) {
       createModuleDBI(obj);
     }
-    llvm::outs() << "[" << fileType << "] All module descriptors created\n";
-    llvm::outs().flush();
-
-    // Log TPI source list sizes before sorting
-    llvm::outs() << "[" << fileType << "] tpiSourceList.size() = " << ctx.tpiSourceList.size() << "\n";
-    llvm::outs() << "[" << fileType << "] psbTpiSourceList.size() = " << ctx.psbTpiSourceList.size() << "\n";
-    llvm::outs() << "[" << fileType << "] tMerger.getTpiSourceList().size() = " << tMerger.getTpiSourceList().size() << "\n";
-    llvm::outs() << "[" << fileType << "] tMerger.isForPsb() = " << tMerger.isForPsb() << "\n";
-    llvm::outs().flush();
 
     // Reorder dependency type sources to come first.
-    llvm::outs() << "[" << fileType << "] About to call sortDependencies()...\n";
-    llvm::outs().flush();
     tMerger.sortDependencies();
-    llvm::outs() << "[" << fileType << "] sortDependencies() completed\n";
-    llvm::outs().flush();
 
     // Merge type information from input files using global type hashing.
     if (ctx.config.debugGHashes) {
-      llvm::outs() << "[" << fileType << "] About to call mergeTypesWithGHash()...\n";
-      llvm::outs().flush();
       tMerger.mergeTypesWithGHash();
-      llvm::outs() << "[" << fileType << "] mergeTypesWithGHash() completed\n";
-      llvm::outs().flush();
     }
 
     // Merge dependencies and then regular objects.
     {
-      llvm::outs() << "[" << fileType << "] Merging debug info from " << tMerger.dependencySources.size() << " dependency sources\n";
-      llvm::outs().flush();
       llvm::TimeTraceScope timeScope("Merge debug info (dependencies)");
       for (TpiSource *source : tMerger.dependencySources)
         addDebug(source);
     }
     {
-      llvm::outs() << "[" << fileType << "] Merging debug info from " << tMerger.objectSources.size() << " object sources\n";
-      llvm::outs().flush();
       llvm::TimeTraceScope timeScope("Merge debug info (objects)");
       for (TpiSource *source : tMerger.objectSources)
         addDebug(source);
     }
-    llvm::outs() << "[" << fileType << "] Debug info merge completed\n";
-    llvm::outs().flush();
 
     builder.getStringTableBuilder().setStrings(pdbStrTab);
   }
@@ -1794,99 +1737,29 @@ void lld::coff::createPDB(COFFLinkerContext &ctx,
                           ArrayRef<uint8_t> sectionTable,
                           llvm::codeview::DebugInfo *buildId,
                           bool createPSB) {
-  const char *fileType = createPSB ? "PSB" : "PDB";
-  llvm::outs() << "\n========================================\n";
-  llvm::outs() << "[" << fileType << "] createPDB called, createPSB=" << createPSB << "\n";
-  llvm::outs() << "[" << fileType << "] COFFLinkerContext address: " << (void*)&ctx << "\n";
-  llvm::outs() << "[" << fileType << "] Number of objFileInstances: " << ctx.objFileInstances.size() << "\n";
-  
-  // Log the state of ObjFile moduleDBI and mergedIntoPDB/PSB flags BEFORE processing
-  llvm::outs() << "[" << fileType << "] === ObjFile state BEFORE processing ===\n";
-  int objWithModuleDBI = 0;
-  int objMergedInto = 0;
-  for (ObjFile *obj : ctx.objFileInstances) {
-    auto *modDBI = createPSB ? obj->psbModuleDBI : obj->moduleDBI;
-    bool merged = createPSB ? obj->mergedIntoPSB : obj->mergedIntoPDB;
-    if (modDBI) objWithModuleDBI++;
-    if (merged) objMergedInto++;
-  }
-  llvm::outs() << "[" << fileType << "] Objects with " << (createPSB ? "psbModuleDBI" : "moduleDBI") 
-               << " set: " << objWithModuleDBI << "/" << ctx.objFileInstances.size() << "\n";
-  llvm::outs() << "[" << fileType << "] Objects with " << (createPSB ? "mergedIntoPSB" : "mergedIntoPDB")
-               << "=true: " << objMergedInto << "/" << ctx.objFileInstances.size() << "\n";
-  
-  // Log first few files' moduleDBI state
-  int count = 0;
-  for (ObjFile *obj : ctx.objFileInstances) {
-    if (count++ >= 5) break;
-    auto *modDBI = createPSB ? obj->psbModuleDBI : obj->moduleDBI;
-    bool merged = createPSB ? obj->mergedIntoPSB : obj->mergedIntoPDB;
-    llvm::outs() << "[" << fileType << "]   " << obj->getName() 
-                 << " " << (createPSB ? "psbModuleDBI" : "moduleDBI") << "=" << (void*)modDBI
-                 << " " << (createPSB ? "mergedIntoPSB" : "mergedIntoPDB") << "=" << merged << "\n";
-  }
-  // Also log spgo_test if present
-  for (ObjFile *obj : ctx.objFileInstances) {
-    if (obj->getName().contains("spgo_test")) {
-      auto *modDBI = createPSB ? obj->psbModuleDBI : obj->moduleDBI;
-      bool merged = createPSB ? obj->mergedIntoPSB : obj->mergedIntoPDB;
-      llvm::outs() << "[" << fileType << "]   " << obj->getName() 
-                   << " " << (createPSB ? "psbModuleDBI" : "moduleDBI") << "=" << (void*)modDBI
-                   << " " << (createPSB ? "mergedIntoPSB" : "mergedIntoPDB") << "=" << merged << "\n";
-    }
-  }
-  llvm::outs() << "========================================\n";
-  llvm::outs().flush();
-  
   llvm::TimeTraceScope timeScope(createPSB ? "PSB file" : "PDB file");
   ScopedTimer t1(ctx.totalPdbLinkTimer);
   {
     PDBLinker pdb(ctx, createPSB);
-    llvm::outs() << "[" << fileType << "] PDBLinker created\n";
-    llvm::outs().flush();
 
     pdb.initialize(buildId);
-    llvm::outs() << "[" << fileType << "] PDBLinker initialized\n";
-    llvm::outs().flush();
-
     pdb.addObjectsToPDB();
-    llvm::outs() << "[" << fileType << "] addObjectsToPDB completed\n";
-    llvm::outs().flush();
-
     pdb.addImportFilesToPDB();
-    llvm::outs() << "[" << fileType << "] addImportFilesToPDB completed\n";
-    llvm::outs().flush();
-
     pdb.addSections(sectionTable);
-    llvm::outs() << "[" << fileType << "] addSections completed\n";
-    llvm::outs().flush();
-
     pdb.addNatvisFiles();
-    llvm::outs() << "[" << fileType << "] addNatvisFiles completed\n";
-    llvm::outs().flush();
-
     pdb.addNamedStreams();
-    llvm::outs() << "[" << fileType << "] addNamedStreams completed\n";
-    llvm::outs().flush();
-
     pdb.addPublicsToPDB();
-    llvm::outs() << "[" << fileType << "] addPublicsToPDB completed\n";
-    llvm::outs().flush();
 
     {
       llvm::TimeTraceScope timeScope("Commit PDB file to disk");
       ScopedTimer t2(ctx.diskCommitTimer);
       codeview::GUID guid;
-      llvm::outs() << "[" << fileType << "] About to commit to disk\n";
-      llvm::outs().flush();
       pdb.commit(&guid);
       memcpy(&buildId->PDB70.Signature, &guid, 16);
     }
 
     t1.stop();
     pdb.printStats();
-
-    // Manually start this profile point to measure ~PDBLinker().
 
     // Manually start this profile point to measure ~PDBLinker().
     if (getTimeTraceProfilerInstance() != nullptr)
@@ -1931,7 +1804,6 @@ void PDBLinker::initialize(llvm::codeview::DebugInfo *buildId) {
 }
 
 void PDBLinker::addSections(ArrayRef<uint8_t> sectionTable) {
-  const char *fileType = createPSB ? "PSB" : "PDB";
   llvm::TimeTraceScope timeScope("PDB output sections");
   ExitOnError exitOnErr;
   // It's not entirely clear what this is, but the * Linker * module uses it.
@@ -1975,7 +1847,6 @@ void PDBLinker::addSections(ArrayRef<uint8_t> sectionTable) {
 }
 
 void PDBLinker::commit(codeview::GUID *guid) {
-  const char *fileType = createPSB ? "PSB" : "PDB";
   // Print an error and continue if PDB/PSB writing fails. This is done mainly
   // so the user can see the output of /time and /summary, which is very helpful
   // when trying to figure out why a PDB/PSB file is too large.
@@ -1989,11 +1860,7 @@ void PDBLinker::commit(codeview::GUID *guid) {
     outputPath = psbPath;
   }
   
-  llvm::outs() << "[" << fileType << "] Writing to: " << outputPath << "\n";
-  llvm::outs().flush();
   if (Error e = builder.commit(outputPath, guid)) {
-    llvm::outs() << "[" << fileType << "] ERROR: builder.commit failed!\n";
-    llvm::outs().flush();
     e = handleErrors(std::move(e), [&](const llvm::msf::MSFError &me) {
       Err(ctx) << me.message();
       if (me.isPageOverflow())

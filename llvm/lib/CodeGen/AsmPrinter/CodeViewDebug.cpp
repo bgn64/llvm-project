@@ -61,7 +61,6 @@
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/SMLoc.h"
-#include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/ScopedPrinter.h"
 #include "llvm/Target/TargetLoweringObjectFile.h"
 #include "llvm/Target/TargetMachine.h"
@@ -136,8 +135,6 @@ static CPUType mapArchToCVCPUType(Triple::ArchType Type) {
 CodeViewDebug::CodeViewDebug(AsmPrinter *AP, bool EmitPSBSections)
     : DebugHandlerBase(AP), OS(*Asm->OutStreamer), TypeTable(Allocator),
       EmitPSBSections(EmitPSBSections) {
-  llvm::outs() << "[CV DEBUG] CodeViewDebug constructor, EmitPSBSections=" << EmitPSBSections << "\n";
-  llvm::outs().flush();
 }
 
 StringRef CodeViewDebug::getFullFilepath(const DIFile *File) {
@@ -567,20 +564,6 @@ void CodeViewDebug::maybeRecordLocation(const DebugLoc &DL,
   OS.emitCVLocDirective(FuncId, FileId, DL.getLine(), DL.getCol(),
                         /*PrologueEnd=*/false, /*IsStmt=*/false,
                         DL->getFilename(), SMLoc(), EmitPSBSections);
-  
-  // Debug output for tracking cv_loc emissions
-  static unsigned CVLocCount = 0;
-  if (CVLocCount < 50) {  // Limit output to first 50 to avoid spam
-    llvm::outs() << "[CV LOC] emitCVLocDirective #" << CVLocCount 
-                 << ": EmitPSBSections=" << EmitPSBSections
-                 << ", FuncId=" << FuncId 
-                 << ", FileId=" << FileId 
-                 << ", Line=" << DL.getLine()
-                 << ", Col=" << DL.getCol()
-                 << ", File=" << DL->getFilename() << "\n";
-    llvm::outs().flush();
-    CVLocCount++;
-  }
 }
 
 void CodeViewDebug::emitCodeViewMagicVersion() {
@@ -638,25 +621,17 @@ static SourceLanguage MapDWLangToCVLang(unsigned DWLang) {
 }
 
 void CodeViewDebug::beginModule(Module *M) {
-  llvm::outs() << "[CV DEBUG] beginModule called, EmitPSBSections=" << EmitPSBSections << "\n";
-  llvm::outs().flush();
   // If COFF debug section is not available, skip any debug info related stuff.
   // Check for the appropriate section based on EmitPSBSections flag.
   MCSection *DebugSection = EmitPSBSections
       ? Asm->getObjFileLowering().getCOFFPSBSymbolsSection()
       : Asm->getObjFileLowering().getCOFFDebugSymbolsSection();
-  llvm::outs() << "[CV DEBUG] DebugSection is " << (DebugSection ? "valid" : "NULL") << "\n";
-  llvm::outs().flush();
   if (!DebugSection) {
-    llvm::outs() << "[CV DEBUG] No debug section, setting Asm to nullptr\n";
-    llvm::outs().flush();
     Asm = nullptr;
     return;
   }
 
   CompilerInfoAsm = Asm;
-  llvm::outs() << "[CV DEBUG] beginModule proceeding with debug info\n";
-  llvm::outs().flush();
   TheCPU = mapArchToCVCPUType(M->getTargetTriple().getArch());
 
   // Get the current source language.
@@ -687,14 +662,8 @@ void CodeViewDebug::beginModule(Module *M) {
 }
 
 void CodeViewDebug::endModule() {
-  llvm::outs() << "[CV DEBUG] endModule called, EmitPSBSections=" << EmitPSBSections << "\n";
-  llvm::outs() << "[CV DEBUG] CompilerInfoAsm is " << (CompilerInfoAsm ? "valid" : "NULL") << "\n";
-  llvm::outs().flush();
   if (!CompilerInfoAsm)
     return;
-
-  llvm::outs() << "[CV DEBUG] endModule proceeding with emission\n";
-  llvm::outs().flush();
 
   // The COFF .debug$S section consists of several subsections, each starting
   // with a 4-byte control code (e.g. 0xF1, 0xF2, etc) and then a 4-byte length
@@ -703,39 +672,21 @@ void CodeViewDebug::endModule() {
 
   // Use the generic .debug$S section, and make a subsection for all the inlined
   // subprograms.
-  llvm::outs() << "[CV DEBUG] switchToDebugSectionForSymbol(nullptr)\\n";
-  llvm::outs().flush();
   switchToDebugSectionForSymbol(nullptr);
 
-  llvm::outs() << "[CV DEBUG] beginCVSubsection for Symbols\\n";
-  llvm::outs().flush();
   MCSymbol *CompilerInfo = beginCVSubsection(DebugSubsectionKind::Symbols);
-  llvm::outs() << "[CV DEBUG] emitObjName\\n";
-  llvm::outs().flush();
   emitObjName();
-  llvm::outs() << "[CV DEBUG] emitCompilerInformation\\n";
-  llvm::outs().flush();
   emitCompilerInformation();
-  llvm::outs() << "[CV DEBUG] endCVSubsection\\n";
-  llvm::outs().flush();
   endCVSubsection(CompilerInfo);
   if (!Asm) {
-    llvm::outs() << "[CV DEBUG] Asm is null after endCVSubsection, returning\\n";
-    llvm::outs().flush();
     return;
   }
 
-  llvm::outs() << "[CV DEBUG] emitSecureHotPatchInformation\\n";
-  llvm::outs().flush();
   emitSecureHotPatchInformation();
 
-  llvm::outs() << "[CV DEBUG] emitInlineeLinesSubsection\\n";
-  llvm::outs().flush();
   emitInlineeLinesSubsection();
 
   // Emit per-function debug information.
-  llvm::outs() << "[CV DEBUG] Emitting debug info for " << FnDebugInfo.size() << " functions\\n";
-  llvm::outs().flush();
   for (auto &P : FnDebugInfo)
     if (!P.first->isDeclarationForLinker())
       emitDebugInfoForFunction(P.first, *P.second);
@@ -743,69 +694,46 @@ void CodeViewDebug::endModule() {
   // Get types used by globals without emitting anything.
   // This is meant to collect all static const data members so they can be
   // emitted as globals.
-  llvm::outs() << "[CV DEBUG] collectDebugInfoForGlobals\\n";
-  llvm::outs().flush();
   collectDebugInfoForGlobals();
 
   // Emit retained types.
-  llvm::outs() << "[CV DEBUG] emitDebugInfoForRetainedTypes\\n";
-  llvm::outs().flush();
   emitDebugInfoForRetainedTypes();
 
   // Emit global variable debug information.
   setCurrentSubprogram(nullptr);
-  llvm::outs() << "[CV DEBUG] emitDebugInfoForGlobals\\n";
-  llvm::outs().flush();
   emitDebugInfoForGlobals();
 
   // Switch back to the generic .debug$S section after potentially processing
   // comdat symbol sections.
-  llvm::outs() << "[CV DEBUG] switchToDebugSectionForSymbol(nullptr) again\\n";
-  llvm::outs().flush();
   switchToDebugSectionForSymbol(nullptr);
 
   // Emit UDT records for any types used by global variables.
   if (!GlobalUDTs.empty()) {
-    llvm::outs() << "[CV DEBUG] Emitting UDTs\\n";
-    llvm::outs().flush();
     MCSymbol *SymbolsEnd = beginCVSubsection(DebugSubsectionKind::Symbols);
     emitDebugInfoForUDTs(GlobalUDTs);
     endCVSubsection(SymbolsEnd);
   }
 
   // This subsection holds a file index to offset in string table table.
-  llvm::outs() << "[CV DEBUG] emitCVFileChecksumsDirective\\n";
-  llvm::outs().flush();
   OS.AddComment("File index to string table offset subsection");
   OS.emitCVFileChecksumsDirective(EmitPSBSections);
 
   // This subsection holds the string table.
-  llvm::outs() << "[CV DEBUG] emitCVStringTableDirective\\n";
-  llvm::outs().flush();
   OS.AddComment("String table");
   OS.emitCVStringTableDirective(EmitPSBSections);
 
   // Emit S_BUILDINFO, which points to LF_BUILDINFO. Put this in its own symbol
   // subsection in the generic .debug$S section at the end. There is no
   // particular reason for this ordering other than to match MSVC.
-  llvm::outs() << "[CV DEBUG] emitBuildInfo\\n";
-  llvm::outs().flush();
   emitBuildInfo();
 
   // Emit type information and hashes last, so that any types we translate while
   // emitting function info are included.
-  llvm::outs() << "[CV DEBUG] emitTypeInformation\\n";
-  llvm::outs().flush();
   emitTypeInformation();
 
   if (EmitDebugGlobalHashes) {
-    llvm::outs() << "[CV DEBUG] emitTypeGlobalHashes\\n";
-    llvm::outs().flush();
     emitTypeGlobalHashes();
   }
-  
-  llvm::outs() << "[CV DEBUG] endModule completed successfully\\n";
-  llvm::outs().flush();
 
   clear();
 }
@@ -1107,12 +1035,6 @@ void CodeViewDebug::emitInlinedCallSite(const FunctionInfo &FI,
   assert(TypeIndices.count({Site.Inlinee, nullptr}));
   TypeIndex InlineeIdx = TypeIndices[{Site.Inlinee, nullptr}];
 
-  llvm::outs() << "[CV INLINESITE] emitInlinedCallSite called, EmitPSBSections=" << EmitPSBSections
-               << ", Inlinee=" << Site.Inlinee->getName() 
-               << ", InlineeIdx=0x" << Twine::utohexstr(InlineeIdx.getIndex())
-               << ", SiteFuncId=" << Site.SiteFuncId << "\n";
-  llvm::outs().flush();
-
   // SymbolRecord
   MCSymbol *InlineEnd = beginSymbolRecord(SymbolKind::S_INLINESITE);
 
@@ -1146,9 +1068,6 @@ void CodeViewDebug::emitInlinedCallSite(const FunctionInfo &FI,
 }
 
 void CodeViewDebug::switchToDebugSectionForSymbol(const MCSymbol *GVSym) {
-  llvm::outs() << "[CV DEBUG] switchToDebugSectionForSymbol, EmitPSBSections=" << EmitPSBSections << "\n";
-  llvm::outs() << "[CV DEBUG]   CompilerInfoAsm is " << (CompilerInfoAsm ? "valid" : "NULL") << "\n";
-  llvm::outs().flush();
   // If we have a symbol, it may be in a section that is COMDAT. If so, find the
   // comdat key. A section may be comdat because of -ffunction-sections or
   // because it is comdat in the IR.
@@ -1157,21 +1076,13 @@ void CodeViewDebug::switchToDebugSectionForSymbol(const MCSymbol *GVSym) {
   const MCSymbol *KeySym = GVSec ? GVSec->getCOMDATSymbol() : nullptr;
 
   // Use PSB or debug section based on EmitPSBSections flag.
-  llvm::outs() << "[CV DEBUG]   Getting debug section...\n";
-  llvm::outs().flush();
   auto *DebugSec = static_cast<MCSectionCOFF *>(
       EmitPSBSections
           ? CompilerInfoAsm->getObjFileLowering().getCOFFPSBSymbolsSection()
           : CompilerInfoAsm->getObjFileLowering().getCOFFDebugSymbolsSection());
-  llvm::outs() << "[CV DEBUG]   DebugSec is " << (DebugSec ? "valid" : "NULL") << "\n";
-  llvm::outs().flush();
   DebugSec = OS.getContext().getAssociativeCOFFSection(DebugSec, KeySym);
-  llvm::outs() << "[CV DEBUG]   After getAssociativeCOFFSection, DebugSec is " << (DebugSec ? "valid" : "NULL") << "\n";
-  llvm::outs().flush();
 
   OS.switchSection(DebugSec);
-  llvm::outs() << "[CV DEBUG]   Switched to section successfully\n";
-  llvm::outs().flush();
 
   // Emit the magic version number if this is the first time we've switched to
   // this section.
@@ -1223,8 +1134,6 @@ void CodeViewDebug::emitDebugInfoForThunk(const Function *GV,
 
 void CodeViewDebug::emitDebugInfoForFunction(const Function *GV,
                                              FunctionInfo &FI) {
-  llvm::outs() << "[CV DEBUG] emitDebugInfoForFunction: " << GV->getName() << "\n";
-  llvm::outs().flush();
   // For each function there is a separate subsection which holds the PC to
   // file:line table.
   const MCSymbol *Fn = Asm->getSymbol(GV);
@@ -1232,8 +1141,6 @@ void CodeViewDebug::emitDebugInfoForFunction(const Function *GV,
 
   // Switch to the to a comdat section, if appropriate.
   switchToDebugSectionForSymbol(Fn);
-  llvm::outs() << "[CV DEBUG]   Switched to section for function symbol\n";
-  llvm::outs().flush();
 
   std::string FuncName;
   auto *SP = GV->getSubprogram();
@@ -1241,8 +1148,6 @@ void CodeViewDebug::emitDebugInfoForFunction(const Function *GV,
   setCurrentSubprogram(SP);
 
   if (SP->isThunk()) {
-    llvm::outs() << "[CV DEBUG]   Function is thunk, emitting thunk info\n";
-    llvm::outs().flush();
     emitDebugInfoForThunk(GV, FI, Fn);
     return;
   }
@@ -1256,20 +1161,13 @@ void CodeViewDebug::emitDebugInfoForFunction(const Function *GV,
   if (FuncName.empty())
     FuncName = std::string(GlobalValue::dropLLVMManglingEscape(GV->getName()));
 
-  llvm::outs() << "[CV DEBUG]   FuncName: " << FuncName << "\n";
-  llvm::outs().flush();
-
   // Emit FPO data, but only on 32-bit x86. No other platforms use it.
   if (MMI->getModule()->getTargetTriple().getArch() == Triple::x86)
     OS.emitCVFPOData(Fn);
 
   // Emit a symbol subsection, required by VS2012+ to find function boundaries.
-  llvm::outs() << "[CV DEBUG]   About to beginCVSubsection for function symbols\n";
-  llvm::outs().flush();
   OS.AddComment("Symbol subsection for " + Twine(FuncName));
   MCSymbol *SymbolsEnd = beginCVSubsection(DebugSubsectionKind::Symbols);
-  llvm::outs() << "[CV DEBUG]   beginCVSubsection completed\n";
-  llvm::outs().flush();
   {
     SymbolKind ProcKind = GV->hasLocalLinkage() ? SymbolKind::S_LPROC32_ID
                                                 : SymbolKind::S_GPROC32_ID;
@@ -1381,25 +1279,15 @@ void CodeViewDebug::emitDebugInfoForFunction(const Function *GV,
     if (SP != nullptr)
       emitDebugInfoForUDTs(LocalUDTs);
 
-    llvm::outs() << "[CV DEBUG]   emitDebugInfoForJumpTables\n";
-    llvm::outs().flush();
     emitDebugInfoForJumpTables(FI);
 
     // We're done with this function.
-    llvm::outs() << "[CV DEBUG]   emitEndSymbolRecord S_PROC_ID_END\n";
-    llvm::outs().flush();
     emitEndSymbolRecord(SymbolKind::S_PROC_ID_END);
   }
-  llvm::outs() << "[CV DEBUG]   endCVSubsection\n";
-  llvm::outs().flush();
   endCVSubsection(SymbolsEnd);
 
   // We have an assembler directive that takes care of the whole line table.
-  llvm::outs() << "[CV DEBUG]   emitCVLinetableDirective, FuncId=" << FI.FuncId << ", EmitPSBSections=" << EmitPSBSections << "\n";
-  llvm::outs().flush();
   OS.emitCVLinetableDirective(FI.FuncId, Fn, FI.End, EmitPSBSections);
-  llvm::outs() << "[CV DEBUG]   Function emission completed\n";
-  llvm::outs().flush();
 }
 
 CodeViewDebug::LocalVarDef
