@@ -184,10 +184,12 @@ ProfiledBinary::ProfiledBinary(const StringRef ExeBinPath,
       SymbolizerOpts(getSymbolizerOpts()), ProEpilogTracker(this),
       Symbolizer(std::make_unique<symbolize::LLVMSymbolizer>(SymbolizerOpts)),
       TrackFuncContextSize(EnableCSPreInliner && UseContextCostForPreInliner) {
-  // Point to executable binary if debug info binary is not specified.
-  // For PDB files, always use the executable path for symbolization
+  // SymbolizerPath is the path passed to symbolizeInlinedCode(). For DWARF
+  // debug info, this can be a separate debug binary. For PSB files, the
+  // symbolizer needs the executable path because it reads COFF structure from
+  // the EXE, while the PSB path is passed separately via SymbolizerOpts.PDBName.
   SymbolizerPath = DebugBinPath.empty() || 
-                   StringRef(DebugBinPath).ends_with_insensitive(".pdb") ? 
+                   StringRef(DebugBinPath).ends_with_insensitive(".psb") ? 
                    ExeBinPath : DebugBinPath;
   if (InferMissingFrames)
     MissingContextInferrer = std::make_unique<MissingFrameInferrer>(this);
@@ -257,7 +259,7 @@ void ProfiledBinary::load() {
   // If path of debug info binary is specified, use the debug info from it,
   // otherwise use the debug info from the executable binary.
   if (!DebugBinaryPath.empty()) {
-    if (StringRef(DebugBinaryPath).ends_with_insensitive(".pdb")) {
+    if (StringRef(DebugBinaryPath).ends_with_insensitive(".psb")) {
       loadSymbolsFromPDB(DebugBinaryPath);
     } else {
       OwningBinary<Binary> DebugPath =
@@ -697,10 +699,10 @@ void ProfiledBinary::disassemble(const ObjectFile *Obj) {
   std::map<SectionRef, SectionSymbolsTy> AllSymbols;
   StringRef FileName = Obj->getFileName();
   
-  // For COFF files with separate PDB files, populate symbols from PDB
+  // For COFF files with separate PSB files, populate symbols from PSB
   // instead of relying on potentially stripped object file symbol table
   if (IsCOFF && !DebugBinaryPath.empty() && 
-      StringRef(DebugBinaryPath).ends_with_insensitive(".pdb")) {
+      StringRef(DebugBinaryPath).ends_with_insensitive(".psb")) {
     populateSymbolsFromPDB(Obj, AllSymbols);
   } else {
     // For other cases, use the traditional approach
@@ -1226,19 +1228,10 @@ symbolize::LLVMSymbolizer::Options ProfiledBinary::getSymbolizerOpts() const {
   SymbolizerOpts.DWPName = DWPPath;
   
   if (!DebugBinaryPath.empty() && 
-      StringRef(DebugBinaryPath).ends_with_insensitive(".pdb")) {
+      StringRef(DebugBinaryPath).ends_with_insensitive(".psb")) {
     SymbolizerOpts.UseDIA = false;
-    
-    // Add the directory containing the PDB to the debug search paths
-    std::string PDBDir = DebugBinaryPath;
-    size_t LastSlash = PDBDir.find_last_of("/\\");
-    if (LastSlash != std::string::npos) {
-      PDBDir = PDBDir.substr(0, LastSlash);
-      SymbolizerOpts.DebugFileDirectory.push_back(PDBDir);
-    }
-
-    // Also try to help the symbolizer by providing hints about where to find debug info
-    SymbolizerOpts.DsymHints.push_back(DebugBinaryPath);
+    // Pass the explicit PSB path to the symbolizer
+    SymbolizerOpts.PDBName = DebugBinaryPath;
   }
 
   return SymbolizerOpts;

@@ -698,11 +698,18 @@ LLVMSymbolizer::getOrCreateModuleInfo(StringRef ModuleName) {
 
         PDB_ReaderType ReaderType =
             Opts.UseDIA ? PDB_ReaderType::DIA : PDB_ReaderType::Native;
-        if (auto Err = loadDataForEXE(ReaderType, Objects.first->getFileName(),
-                                      Session)) {
+        // If an explicit PDB path was provided, use it directly.
+        // Otherwise, search for the PDB based on the executable.
+        Error Err = Opts.PDBName.empty()
+                        ? loadDataForEXE(ReaderType,
+                                         Objects.first->getFileName(), Session)
+                        : loadDataForPDB(ReaderType, Opts.PDBName, Session);
+        if (Err) {
           Modules.emplace(ModuleName, std::unique_ptr<SymbolizableModule>());
           // Return along the PDB filename to provide more context
-          return createFileError(PDBFileName, std::move(Err));
+          return createFileError(
+              Opts.PDBName.empty() ? PDBFileName : Opts.PDBName,
+              std::move(Err));
         }
         Context.reset(new PDBContext(*CoffObject, std::move(Session)));
       }
