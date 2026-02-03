@@ -525,7 +525,8 @@ static bool symbolGoesInGlobalsStream(const CVSymbol &sym,
 
 static void addGlobalSymbol(pdb::GSIStreamBuilder &builder, uint16_t modIndex,
                             unsigned symOffset,
-                            std::vector<uint8_t> &symStorage) {
+                            std::vector<uint8_t> &symStorage,
+                            bool useLinkageName = false) {
   CVSymbol sym{ArrayRef(symStorage)};
   switch (sym.kind()) {
   case SymbolKind::S_CONSTANT:
@@ -552,7 +553,10 @@ static void addGlobalSymbol(pdb::GSIStreamBuilder &builder, uint16_t modIndex,
     ps.Module = modIndex;
     // For some reason, MSVC seems to add one to this value.
     ++ps.Module;
-    ps.Name = getSymbolName(sym);
+    // For PSB files, use the linkage name (mangled name) if available.
+    // This allows tools like llvm-profgen to find functions by their
+    // mangled names for SPGO support.
+    ps.Name = useLinkageName ? getSymbolLinkageName(sym) : getSymbolName(sym);
     ps.SumName = 0;
     ps.SymOffset = symOffset;
     builder.addGlobalSymbol(ps);
@@ -651,7 +655,7 @@ void PDBLinker::analyzeSymbolSubsection(
                             nextRelocIndex, storage);
           auto *modDBI = getModuleDBI(file);
           addGlobalSymbol(builder.getGsiBuilder(),
-                          file->moduleDBI->getModuleIndex(), moduleSymOffset,
+                          modDBI->getModuleIndex(), moduleSymOffset,
                           storage, createPSB);
           ++globalSymbols;
         }

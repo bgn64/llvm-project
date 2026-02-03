@@ -396,10 +396,22 @@ TypeIndex CodeViewDebug::getFuncIdForSubprogram(const DISubprogram *SP) {
   if (I != TypeIndices.end())
     return I->second;
 
-  // The display name includes function template arguments. Drop them to match
-  // MSVC. We need to have the template arguments in the DISubprogram name
-  // because they are used in other symbol records, such as S_GPROC32_IDs.
-  StringRef DisplayName = removeTemplateArgs(SP->getName());
+  // For PSB sections, use the linkage name (mangled name) for the LF_FUNC_ID
+  // record. This allows tools like LLD and llvm-profgen to extract the mangled
+  // name for inlined functions without needing additional lookups.
+  // For regular PDB, use the display name with template args stripped to match
+  // MSVC behavior.
+  StringRef FuncName;
+  if (EmitPSBSections) {
+    FuncName = SP->getLinkageName();
+    if (FuncName.empty())
+      FuncName = SP->getName();
+  } else {
+    // The display name includes function template arguments. Drop them to match
+    // MSVC. We need to have the template arguments in the DISubprogram name
+    // because they are used in other symbol records, such as S_GPROC32_IDs.
+    FuncName = removeTemplateArgs(SP->getName());
+  }
 
   const DIScope *Scope = SP->getScope();
   TypeIndex TI;
@@ -409,12 +421,12 @@ TypeIndex CodeViewDebug::getFuncIdForSubprogram(const DISubprogram *SP) {
     // subprogram.
     TypeIndex ClassType = getTypeIndex(Class);
     MemberFuncIdRecord MFuncId(ClassType, getMemberFunctionType(SP, Class),
-                               DisplayName);
+                               FuncName);
     TI = TypeTable.writeLeafType(MFuncId);
   } else {
     // Otherwise, this must be a free function.
     TypeIndex ParentScope = getScopeIndex(Scope);
-    FuncIdRecord FuncId(ParentScope, getTypeIndex(SP->getType()), DisplayName);
+    FuncIdRecord FuncId(ParentScope, getTypeIndex(SP->getType()), FuncName);
     TI = TypeTable.writeLeafType(FuncId);
   }
 
@@ -1206,7 +1218,21 @@ void CodeViewDebug::emitDebugInfoForFunction(const Function *GV,
     // Emit the function display name as a null-terminated string.
     OS.AddComment("Function name");
     // Truncate the name so we won't overflow the record length field.
-    emitNullTerminatedSymbolName(OS, FuncName);
+    if (EmitPSBSections) {
+      // When emitting PSB sections, we emit two strings (display name + linkage
+      // name), so use a smaller MaxFixedRecordLength to leave room for both.
+      // Each string gets roughly half the available space: (0xFF00 - 39) / 2 ≈
+      // 0x7F00.
+      emitNullTerminatedSymbolName(OS, FuncName, 0x7F00);
+      // Emit the linkage name (mangled name) as a second null-terminated
+      // string. This allows tools like LLD to extract the mangled name for PSB
+      // generation without needing to look up relocations.
+      OS.AddComment("Linkage name");
+      emitNullTerminatedSymbolName(
+          OS, GlobalValue::dropLLVMManglingEscape(GV->getName()), 0x7F00);
+    } else {
+      emitNullTerminatedSymbolName(OS, FuncName);
+    }
     endSymbolRecord(ProcRecordEnd);
 
     MCSymbol *FrameProcEnd = beginSymbolRecord(SymbolKind::S_FRAMEPROC);

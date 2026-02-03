@@ -13,6 +13,7 @@
 #include "llvm/DebugInfo/CodeView/CodeView.h"
 #include "llvm/DebugInfo/CodeView/Formatters.h"
 #include "llvm/DebugInfo/CodeView/LazyRandomTypeCollection.h"
+#include "llvm/DebugInfo/CodeView/RecordName.h"
 #include "llvm/DebugInfo/CodeView/SymbolRecord.h"
 #include "llvm/DebugInfo/CodeView/TypeRecord.h"
 #include "llvm/DebugInfo/PDB/Native/FormatUtil.h"
@@ -851,6 +852,10 @@ Error MinimalSymbolDumper::visitKnownRecord(CVSymbol &CVR,
 
 Error MinimalSymbolDumper::visitKnownRecord(CVSymbol &CVR, ProcSym &Proc) {
   P.format(" `{0}`", Proc.Name);
+  // Print the linkage name (mangled name) if it differs from the display name.
+  StringRef LinkageName = getSymbolLinkageName(CVR);
+  if (!LinkageName.empty() && LinkageName != Proc.Name)
+    P.format(" (linkage name: `{0}`)", LinkageName);
   AutoIndent Indent(P, 7);
   P.formatLine("parent = {0}, end = {1}, addr = {2}, code size = {3}",
                Proc.Parent, Proc.End,
