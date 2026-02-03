@@ -2082,6 +2082,40 @@ bool SampleProfileLoader::doInitialization(Module &M,
         FuncNameToProfNameMap);
   }
 
+  // Build SymbolMap early so we can adjust profile line numbers before
+  // any profile queries are made.
+  auto Remapper = Reader->getRemapper();
+  for (const auto &N_F : M.getValueSymbolTable()) {
+    StringRef OrigName = N_F.getKey();
+    Function *F = dyn_cast<Function>(N_F.getValue());
+    if (F == nullptr || OrigName.empty())
+      continue;
+    SymbolMap[FunctionId(OrigName)] = F;
+    StringRef NewName = FunctionSamples::getCanonicalFnName(*F);
+    if (OrigName != NewName && !NewName.empty()) {
+      auto r = SymbolMap.emplace(FunctionId(NewName), F);
+      // Failing to insert means there is already an entry in SymbolMap,
+      // thus there are multiple functions that are mapped to the same
+      // stripped name. In this case of name conflicting, set the value
+      // to nullptr to avoid confusion.
+      if (!r.second)
+        r.first->second = nullptr;
+      OrigName = NewName;
+    }
+    // Insert the remapped names into SymbolMap.
+    if (Remapper) {
+      if (auto MapName = Remapper->lookUpNameInProfile(OrigName)) {
+        if (*MapName != OrigName && !MapName->empty())
+          SymbolMap.emplace(FunctionId(*MapName), F);
+      }
+    }
+  }
+
+  // Adjust profile line numbers to match IR debug metadata offsets.
+  // This is needed when profile line numbers are absolute (e.g., from PDB)
+  // but LLVM expects them relative to function start.
+  Reader->adjustProfileLineNumbers(SymbolMap);
+
   return true;
 }
 
@@ -2175,33 +2209,8 @@ bool SampleProfileLoader::runOnModule(Module &M, ModuleAnalysisManager *AM,
       rejectHighStalenessProfile(M, PSI, Reader->getProfiles()))
     return false;
 
-  auto Remapper = Reader->getRemapper();
-  // Populate the symbol map.
-  for (const auto &N_F : M.getValueSymbolTable()) {
-    StringRef OrigName = N_F.getKey();
-    Function *F = dyn_cast<Function>(N_F.getValue());
-    if (F == nullptr || OrigName.empty())
-      continue;
-    SymbolMap[FunctionId(OrigName)] = F;
-    StringRef NewName = FunctionSamples::getCanonicalFnName(*F);
-    if (OrigName != NewName && !NewName.empty()) {
-      auto r = SymbolMap.emplace(FunctionId(NewName), F);
-      // Failiing to insert means there is already an entry in SymbolMap,
-      // thus there are multiple functions that are mapped to the same
-      // stripped name. In this case of name conflicting, set the value
-      // to nullptr to avoid confusion.
-      if (!r.second)
-        r.first->second = nullptr;
-      OrigName = NewName;
-    }
-    // Insert the remapped names into SymbolMap.
-    if (Remapper) {
-      if (auto MapName = Remapper->lookUpNameInProfile(OrigName)) {
-        if (*MapName != OrigName && !MapName->empty())
-          SymbolMap.emplace(FunctionId(*MapName), F);
-      }
-    }
-  }
+  // Note: SymbolMap is already populated in doInitialization() where
+  // profile line numbers are also adjusted.
 
   // Stale profile matching.
   if (ReportProfileStaleness || PersistProfileStaleness ||

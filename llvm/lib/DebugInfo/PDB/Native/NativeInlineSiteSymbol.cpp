@@ -195,6 +195,53 @@ void NativeInlineSiteSymbol::getLineOffset(uint32_t OffsetInFunc,
 }
 
 std::unique_ptr<IPDBEnumLineNumbers>
+NativeInlineSiteSymbol::findInlineeLines() const {
+  // Use ParentAddr to find the module containing this inline site
+  uint16_t Modi;
+  if (!Session.moduleIndexForVA(ParentAddr, Modi))
+    return nullptr;
+
+  Expected<ModuleDebugStreamRef> ModS = Session.getModuleDebugStream(Modi);
+  if (!ModS) {
+    consumeError(ModS.takeError());
+    return nullptr;
+  }
+
+  Expected<DebugChecksumsSubsectionRef> Checksums =
+      ModS->findChecksumsSubsection();
+  if (!Checksums) {
+    consumeError(Checksums.takeError());
+    return nullptr;
+  }
+
+  // Find the inlinee source line info which contains the function's start line
+  std::optional<InlineeSourceLine> Inlinee =
+      findInlineeByTypeIndex(Sym.Inlinee, ModS.get());
+
+  if (!Inlinee)
+    return nullptr;
+
+  // The SourceLineNum is the first line of the inlined function definition
+  uint32_t StartLine = Inlinee->Header->SourceLineNum;
+  uint32_t SrcCol = 0;
+  uint32_t FileChecksumOffset = Inlinee->Header->FileID;
+
+  auto ChecksumIter = Checksums->getArray().at(FileChecksumOffset);
+  uint32_t SrcFileId =
+      Session.getSymbolCache().getOrCreateSourceFile(*ChecksumIter);
+
+  // Get section and offset for the parent address
+  uint32_t LineSect, LineOff;
+  Session.addressForVA(ParentAddr, LineSect, LineOff);
+
+  NativeLineNumber LineNum(Session, StartLine, SrcCol, LineSect, LineOff, 1,
+                           SrcFileId, Modi);
+  std::vector<NativeLineNumber> Lines{LineNum};
+
+  return std::make_unique<NativeEnumLineNumbers>(std::move(Lines));
+}
+
+std::unique_ptr<IPDBEnumLineNumbers>
 NativeInlineSiteSymbol::findInlineeLinesByVA(uint64_t VA,
                                              uint32_t Length) const {
   uint16_t Modi;

@@ -23,6 +23,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/ProfileSummary.h"
 #include "llvm/ProfileData/ProfileCommon.h"
@@ -145,6 +146,162 @@ void SampleProfileReader::dumpJson(raw_ostream &OS) {
 
   // Emit a newline character at the end as json::OStream doesn't emit one.
   OS << "\n";
+}
+
+/// Helper function to recursively adjust line numbers in a FunctionSamples
+/// object by adding the given offset. This rebuilds the BodySamples,
+/// CallsiteSamples, and VirtualCallsiteTypeCounts maps with updated
+/// LineLocation keys.
+static void adjustFunctionSampleLineNumbers(
+    FunctionSamples &FS, unsigned Offset,
+    const HashKeyMap<std::unordered_map, FunctionId, Function *> &FunctionMap,
+    unsigned IndentLevel = 0) {
+  std::string Indent(IndentLevel * 2, ' ');
+  StringRef FuncName = FS.getFunction().stringRef();
+  
+  if (Offset > 0) {
+    llvm::outs() << Indent << "[LineAdjust] Function '" << FuncName 
+                 << "': applying offset +" << Offset << "\n";
+  }
+
+  // Adjust BodySamples map by rebuilding with new keys
+  BodySampleMap NewBodySamples;
+  for (const auto &[Loc, Sample] : FS.getBodySamples()) {
+    LineLocation NewLoc(Loc.LineOffset + Offset, Loc.Discriminator);
+    if (Offset > 0) {
+      llvm::outs() << Indent << "  Body line " << Loc.LineOffset 
+                   << " -> " << NewLoc.LineOffset << "\n";
+    }
+    NewBodySamples[NewLoc] = Sample;
+  }
+  // Replace the old map with the new one
+  const_cast<BodySampleMap &>(FS.getBodySamples()) = std::move(NewBodySamples);
+
+  // Adjust CallsiteSamples map and recursively adjust nested samples
+  CallsiteSampleMap NewCallsiteSamples;
+  for (const auto &[Loc, FuncMap] : FS.getCallsiteSamples()) {
+    LineLocation NewLoc(Loc.LineOffset + Offset, Loc.Discriminator);
+    if (Offset > 0) {
+      llvm::outs() << Indent << "  Callsite line " << Loc.LineOffset 
+                   << " -> " << NewLoc.LineOffset << "\n";
+    }
+
+    // Copy the function map and recursively adjust nested function samples
+    FunctionSamplesMap NewFuncMap;
+    for (const auto &[CalleeName, CalleeSamples] : FuncMap) {
+      NewFuncMap[CalleeName] = CalleeSamples;
+      
+      // Calculate the offset for the inlined callee based on its own debug info
+      unsigned CalleeOffset = 0;
+      auto It = FunctionMap.find(CalleeName);
+      if (It != FunctionMap.end() && It->second) {
+        if (DISubprogram *CalleeSP = It->second->getSubprogram()) {
+          unsigned CalleeDeclLine = CalleeSP->getLine();
+          unsigned CalleeScopeLine = CalleeSP->getScopeLine();
+          if (CalleeDeclLine > 0 && CalleeScopeLine > 0 && 
+              CalleeScopeLine > CalleeDeclLine) {
+            CalleeOffset = CalleeScopeLine - CalleeDeclLine;
+            llvm::outs() << Indent << "    Inlined callee '" 
+                         << CalleeName.stringRef() 
+                         << "': DeclLine=" << CalleeDeclLine 
+                         << ", ScopeLine=" << CalleeScopeLine 
+                         << ", Offset=" << CalleeOffset << "\n";
+          }
+        }
+      }
+      
+      // Recursively adjust the nested function samples with the callee's own offset
+      adjustFunctionSampleLineNumbers(NewFuncMap[CalleeName], CalleeOffset, 
+                                      FunctionMap, IndentLevel + 1);
+    }
+
+    NewCallsiteSamples[NewLoc] = std::move(NewFuncMap);
+  }
+  const_cast<CallsiteSampleMap &>(FS.getCallsiteSamples()) =
+      std::move(NewCallsiteSamples);
+
+  // Adjust VirtualCallsiteTypeCounts map
+  CallsiteTypeMap NewTypeCounts;
+  for (const auto &[Loc, TypeCounts] : FS.getCallsiteTypeCounts()) {
+    LineLocation NewLoc(Loc.LineOffset + Offset, Loc.Discriminator);
+    NewTypeCounts[NewLoc] = TypeCounts;
+  }
+  const_cast<CallsiteTypeMap &>(FS.getCallsiteTypeCounts()) =
+      std::move(NewTypeCounts);
+}
+
+/// Adjust profile line numbers to match IR debug metadata offsets.
+/// Calculates the offset between function declaration line and scope line
+/// (opening brace) from the Module's debug metadata, then applies this offset
+/// to all line numbers in the profile. This aligns profile line numbers
+/// (which are relative to function body) with IR line numbers (which are absolute).
+void SampleProfileReader::adjustProfileLineNumbers(
+    const HashKeyMap<std::unordered_map, FunctionId, Function *> &FunctionMap) {
+  llvm::outs() << "=== Adjusting Profile Line Numbers ===\n";
+  llvm::outs() << "Total profiles to process: " << Profiles.size() << "\n";
+  
+  unsigned AdjustedCount = 0;
+  unsigned SkippedCount = 0;
+  
+  // Adjust each profile using debug metadata from the corresponding Function
+  for (auto &[HashCode, FuncSamples] : Profiles) {
+    FunctionId FuncId = FuncSamples.getFunction();
+
+    // Find the corresponding Function in the IR
+    auto It = FunctionMap.find(FuncId);
+    if (It == FunctionMap.end()) {
+      ++SkippedCount;
+      continue;
+    }
+
+    Function *F = It->second;
+    if (!F) {
+      ++SkippedCount;
+      continue;
+    }
+
+    // Get function declaration line from debug metadata
+    DISubprogram *SP = F->getSubprogram();
+    if (!SP) {
+      ++SkippedCount;
+      continue;
+    }
+
+    unsigned FuncDeclLine = SP->getLine();
+    if (FuncDeclLine == 0) {
+      ++SkippedCount;
+      continue;
+    }
+
+    // Get scope line (opening brace) from debug metadata
+    unsigned ScopeLine = SP->getScopeLine();
+    if (ScopeLine == 0) {
+      ++SkippedCount;
+      continue;
+    }
+
+    // Calculate offset: scope_line - decl_line
+    // Profile line numbers are relative to function body start,
+    // so we need to add this offset to make them absolute
+    int Offset = static_cast<int>(ScopeLine) - static_cast<int>(FuncDeclLine);
+
+    // Only apply positive offsets
+    if (Offset > 0) {
+      llvm::outs() << "\n[LineAdjust] Top-level function '" << FuncId.stringRef() 
+                   << "': DeclLine=" << FuncDeclLine 
+                   << ", ScopeLine=" << ScopeLine 
+                   << ", Offset=" << Offset << "\n";
+      adjustFunctionSampleLineNumbers(FuncSamples, static_cast<unsigned>(Offset), FunctionMap);
+      ++AdjustedCount;
+    } else {
+      ++SkippedCount;
+    }
+  }
+  
+  llvm::outs() << "\n=== Line Number Adjustment Complete ===\n";
+  llvm::outs() << "Adjusted: " << AdjustedCount << " functions\n";
+  llvm::outs() << "Skipped: " << SkippedCount << " functions\n";
+  llvm::outs() << "========================================\n\n";
 }
 
 /// Parse \p Input as function head.

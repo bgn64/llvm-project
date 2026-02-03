@@ -31,6 +31,7 @@ public:
             PdbSymbolIdField RecurseIdFields) const override;
 
   std::string getName() const override;
+  std::unique_ptr<IPDBEnumLineNumbers> findInlineeLines() const override;
   std::unique_ptr<IPDBEnumLineNumbers>
   findInlineeLinesByVA(uint64_t VA, uint32_t Length) const override;
 

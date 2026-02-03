@@ -77,6 +77,9 @@ PDBContext::getLineInfoForAddress(object::SectionedAddress Address,
     if (FuncLineNumbers && FuncLineNumbers->getChildCount() > 0) {
       if (auto FirstLine = FuncLineNumbers->getNext()) {
         Result.StartLine = FirstLine->getLineNumber();
+        llvm::outs() << "[PDBContext] Top-level function '" << Result.FunctionName
+                     << "' StartLine=" << Result.StartLine
+                     << ", Line=" << Result.Line << "\n";
       }
     }
   }
@@ -160,7 +163,13 @@ PDBContext::getInliningInfoForAddress(object::SectionedAddress Address,
     if (InlineeLines && InlineeLines->getChildCount() > 0) {
       if (auto FirstLine = InlineeLines->getNext()) {
         LineInfo.StartLine = FirstLine->getLineNumber();
+        llvm::outs() << "[PDBContext] Inlined function '" << LineInfo.FunctionName
+                     << "' StartLine=" << LineInfo.StartLine
+                     << ", Line=" << LineInfo.Line << "\n";
       }
+    } else {
+      llvm::outs() << "[PDBContext] Inlined function '" << LineInfo.FunctionName
+                   << "' NO StartLine found (findInlineeLines returned empty)\n";
     }
     
     InlineInfo.addFrame(LineInfo);
