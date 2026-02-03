@@ -11,6 +11,7 @@
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/DebugInfo/CodeView/GUID.h"
 #include <optional>
 
 namespace llvm::codeview {
@@ -24,8 +25,11 @@ namespace coff {
 class SectionChunk;
 class COFFLinkerContext;
 
-void createPDB(COFFLinkerContext &ctx, llvm::ArrayRef<uint8_t> sectionTable,
-               llvm::codeview::DebugInfo *buildId, bool createPSB = false);
+llvm::codeview::GUID createPDB(COFFLinkerContext &ctx,
+                                llvm::ArrayRef<uint8_t> sectionTable,
+                                llvm::codeview::DebugInfo *buildId,
+                                bool createPSB = false,
+                                const llvm::codeview::GUID *useGuid = nullptr);
 
 std::optional<std::pair<llvm::StringRef, uint32_t>>
 getFileLineCodeView(const SectionChunk *c, uint32_t addr);

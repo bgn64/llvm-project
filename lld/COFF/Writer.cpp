@@ -811,13 +811,18 @@ void Writer::run() {
 
   if (!ctx.config.pdbPath.empty() && ctx.config.debug) {
     assert(buildId);
+    llvm::codeview::GUID pdbGuid = {};
     // Create PDB file if enabled
     if (ctx.config.enablePDB) {
-      createPDB(ctx, sectionTable, buildId->buildId, /*createPSB=*/false);
+      pdbGuid = createPDB(ctx, sectionTable, buildId->buildId, /*createPSB=*/false);
     }
-    // Create PSB file if enabled
+    // Create PSB file if enabled, using the same GUID as the PDB
+    // so that debuggers can use either file interchangeably.
     if (ctx.config.enablePSB) {
-      createPDB(ctx, sectionTable, buildId->buildId, /*createPSB=*/true);
+      const llvm::codeview::GUID *useGuid =
+          ctx.config.enablePDB ? &pdbGuid : nullptr;
+      createPDB(ctx, sectionTable, buildId->buildId, /*createPSB=*/true,
+                useGuid);
     }
   }
   writeBuildId();

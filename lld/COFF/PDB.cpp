@@ -66,9 +66,10 @@ class PDBLinker {
   friend DebugSHandler;
 
 public:
-  PDBLinker(COFFLinkerContext &ctx, bool createPSB = false)
+  PDBLinker(COFFLinkerContext &ctx, bool createPSB = false,
+            const codeview::GUID *useGuid = nullptr)
       : builder(bAlloc()), tMerger(ctx, bAlloc(), createPSB), ctx(ctx),
-        createPSB(createPSB) {
+        createPSB(createPSB), useGuid(useGuid) {
     // This isn't strictly necessary, but link.exe usually puts an empty string
     // as the first "valid" string in the string table, so we do the same in
     // order to maintain as much byte-for-byte compatibility as possible.
@@ -165,6 +166,10 @@ private:
   /// Whether to create a PSB file (using .psb$* sections) instead of a PDB
   /// file (using .debug$* sections).
   bool createPSB = false;
+
+  /// If non-null, use this GUID instead of hashing PDB contents.
+  /// Used to make PSB have the same GUID as the PDB.
+  const codeview::GUID *useGuid = nullptr;
 
   /// Get the debug symbols section name based on createPSB flag.
   StringRef getDebugSName() const { return createPSB ? ".psb$S" : ".debug$S"; }
@@ -1682,15 +1687,19 @@ void PDBLinker::addImportFilesToPDB() {
   }
 }
 
-// Creates a PDB or PSB file.
-void lld::coff::createPDB(COFFLinkerContext &ctx,
-                          ArrayRef<uint8_t> sectionTable,
-                          llvm::codeview::DebugInfo *buildId,
-                          bool createPSB) {
+// Creates a PDB or PSB file. Returns the GUID of the created file.
+// If useGuid is provided, the file will use that GUID instead of generating
+// one from content hash (used to make PSB have the same GUID as PDB).
+codeview::GUID lld::coff::createPDB(COFFLinkerContext &ctx,
+                                    ArrayRef<uint8_t> sectionTable,
+                                    llvm::codeview::DebugInfo *buildId,
+                                    bool createPSB,
+                                    const codeview::GUID *useGuid) {
   llvm::TimeTraceScope timeScope(createPSB ? "PSB file" : "PDB file");
   ScopedTimer t1(ctx.totalPdbLinkTimer);
+  codeview::GUID resultGuid;
   {
-    PDBLinker pdb(ctx, createPSB);
+    PDBLinker pdb(ctx, createPSB, useGuid);
 
     pdb.initialize(buildId);
     pdb.addObjectsToPDB();
@@ -1703,9 +1712,11 @@ void lld::coff::createPDB(COFFLinkerContext &ctx,
     {
       llvm::TimeTraceScope timeScope("Commit PDB file to disk");
       ScopedTimer t2(ctx.diskCommitTimer);
-      codeview::GUID guid;
-      pdb.commit(&guid);
-      memcpy(&buildId->PDB70.Signature, &guid, 16);
+      pdb.commit(&resultGuid);
+      // Only update the buildId signature for the PDB, not the PSB.
+      // The PSB uses the same GUID as the PDB to allow both to match the binary.
+      if (!createPSB)
+        memcpy(&buildId->PDB70.Signature, &resultGuid, 16);
     }
 
     t1.stop();
@@ -1720,6 +1731,8 @@ void lld::coff::createPDB(COFFLinkerContext &ctx,
   // Manually end this profile point to measure ~PDBLinker().
   if (getTimeTraceProfilerInstance() != nullptr)
     timeTraceProfilerEnd();
+
+  return resultGuid;
 }
 
 void PDBLinker::initialize(llvm::codeview::DebugInfo *buildId) {
@@ -1739,7 +1752,14 @@ void PDBLinker::initialize(llvm::codeview::DebugInfo *buildId) {
   // Add an Info stream.
   auto &infoBuilder = builder.getInfoBuilder();
   infoBuilder.setVersion(pdb::PdbRaw_ImplVer::PdbImplVC70);
-  infoBuilder.setHashPDBContentsToGUID(true);
+  // If a GUID was provided (e.g., from PDB for PSB), use it directly.
+  // Otherwise, hash the PDB contents to generate a GUID.
+  if (useGuid) {
+    infoBuilder.setGuid(*useGuid);
+    infoBuilder.setHashPDBContentsToGUID(false);
+  } else {
+    infoBuilder.setHashPDBContentsToGUID(true);
+  }
 
   // Add an empty DBI stream.
   pdb::DbiStreamBuilder &dbiBuilder = builder.getDbiBuilder();
