@@ -1739,10 +1739,15 @@ void PDBLinker::initialize(llvm::codeview::DebugInfo *buildId) {
   ExitOnError exitOnErr;
   exitOnErr(builder.initialize(ctx.config.pdbPageSize));
 
-  buildId->Signature.CVSignature = OMF::Signature::PDB70;
-  // Signature is set to a hash of the PDB contents when the PDB is done.
-  memset(buildId->PDB70.Signature, 0, 16);
-  buildId->PDB70.Age = 1;
+  // Only initialize the buildId fields when creating a PDB, not a PSB.
+  // When creating a PSB, the buildId was already set by the PDB creation
+  // and we don't want to overwrite it with zeros.
+  if (!createPSB) {
+    buildId->Signature.CVSignature = OMF::Signature::PDB70;
+    // Signature is set to a hash of the PDB contents when the PDB is done.
+    memset(buildId->PDB70.Signature, 0, 16);
+    buildId->PDB70.Age = 1;
+  }
 
   // Create streams in MSF for predefined streams, namely
   // PDB, TPI, DBI and IPI.
