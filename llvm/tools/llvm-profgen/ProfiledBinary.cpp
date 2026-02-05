@@ -946,7 +946,6 @@ void ProfiledBinary::loadSymbolsFromPDB(const std::string &PDBPath) {
   // Get section headers for segment:offset to address conversion
   // Segment numbers are 1-based, so segment 1 = section 0
   FixedStreamArray<object::coff_section> SectionHeaders = Dbi.getSectionHeaders();
-  outs() << "[PDB] Found " << SectionHeaders.size() << " section headers\n";
   
   // Helper lambda to convert segment:offset to virtual address
   auto segmentOffsetToVA = [&](uint16_t Segment, uint32_t Offset) -> uint64_t {
@@ -992,20 +991,13 @@ void ProfiledBinary::loadSymbolsFromPDB(const std::string &PDBPath) {
         if (Addr == 0)
           continue;
           
-        if (!PubSym.Name.empty()) {
+        if (!PubSym.Name.empty())
           AddrToLinkageName[Addr] = std::string(PubSym.Name);
-          outs() << "[PDB Public] Addr: " << format("0x%" PRIx64, Addr)
-                 << ", Segment: " << PubSym.Segment
-                 << ", Offset: " << format("0x%x", PubSym.Offset)
-                 << ", Name: " << PubSym.Name << "\n";
-        }
       }
     } else {
       consumeError(ExpectedPublics.takeError());
     }
   }
-
-  outs() << "[PDB] Found " << AddrToLinkageName.size() << " public symbols\n";
 
   /// For procedure symbols (S_GPROC32, S_LPROC32, etc.), return the linkage name
   /// (mangled name) which is the second null-terminated string in the record.
@@ -1056,7 +1048,6 @@ void ProfiledBinary::loadSymbolsFromPDB(const std::string &PDBPath) {
 
   // Iterate through all modules to find function symbols (S_GPROC32, S_LPROC32)
   const pdb::DbiModuleList &Modules = Dbi.modules();
-  outs() << "[PDB] Scanning " << Modules.getModuleCount() << " modules for function symbols\n";
   for (uint32_t Modi = 0; Modi < Modules.getModuleCount(); ++Modi) {
     Expected<pdb::ModuleDebugStreamRef> ExpectedModS =
         pdb::getModuleDebugStream(PdbFile, Modi);
@@ -1102,11 +1093,6 @@ void ProfiledBinary::loadSymbolsFromPDB(const std::string &PDBPath) {
       auto It = AddrToLinkageName.find(StartAddress);
       if (It != AddrToLinkageName.end()) {
         funcName = It->second;
-        outs() << "[PDB Func] Addr: " << format("0x%" PRIx64, StartAddress)
-               << " - " << format("0x%" PRIx64, EndAddress)
-               << ", Size: " << Proc.CodeSize
-               << ", ProcName: " << Proc.Name
-               << ", LinkageName: " << funcName << "\n";
       } else {
         // Get the linkage name directly from the ProcSym record.
         // The linkage name (mangled name) is stored as the second null-terminated
@@ -1114,19 +1100,10 @@ void ProfiledBinary::loadSymbolsFromPDB(const std::string &PDBPath) {
         StringRef LinkageName = getSymbolLinkageName(*I);
         if (!LinkageName.empty()) {
           funcName = std::string(LinkageName);
-          outs() << "[PDB Func] Addr: " << format("0x%" PRIx64, StartAddress)
-                 << " - " << format("0x%" PRIx64, EndAddress)
-                 << ", Size: " << Proc.CodeSize
-                 << ", ProcName: " << Proc.Name
-                 << ", LinkageName (from ProcSym): " << funcName << "\n";
         } else {
           funcName = std::string(Proc.Name);
           if (funcName.empty())
             continue;
-          outs() << "[PDB Func] Addr: " << format("0x%" PRIx64, StartAddress)
-                 << " - " << format("0x%" PRIx64, EndAddress)
-                 << ", Size: " << Proc.CodeSize
-                 << ", Name: " << funcName << " (no linkage name)\n";
         }
       }
 
