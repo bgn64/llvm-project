@@ -18,7 +18,6 @@
 #include "llvm/Object/BuildID.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
-#include "llvm/Support/Format.h"
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/VirtualFileSystem.h"
@@ -200,10 +199,7 @@ int main(int argc, const char *argv[]) {
   // Load symbols and disassemble the code of a given binary.
   std::unique_ptr<ProfiledBinary> Binary =
       std::make_unique<ProfiledBinary>(BinaryPath, DebugBinPath);
-  
-  // Print binary identifier information
-  printBinaryIdentifier(Binary);
-  
+
   if (ShowDisassemblyOnly)
     return EXIT_SUCCESS;
 

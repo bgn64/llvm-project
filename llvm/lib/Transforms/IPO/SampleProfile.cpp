@@ -336,6 +336,12 @@ static cl::opt<bool> AnnotateSampleProfileInlinePhase(
     cl::desc("Annotate LTO phase (prelink / postlink), or main (no LTO) for "
              "sample-profile inline pass name."));
 
+static cl::opt<bool> SampleProfileDumpFunctionMapping(
+    "sample-profile-dump-function-mapping", cl::Hidden, cl::init(false),
+    cl::desc("Dump mapping between module functions and profile data. "
+             "Shows which functions found profile data and what names were "
+             "used for lookup."));
+
 namespace llvm {
 extern cl::opt<bool> EnableExtTspBlockPlacement;
 }
@@ -2109,6 +2115,54 @@ bool SampleProfileLoader::doInitialization(Module &M,
           SymbolMap.emplace(FunctionId(*MapName), F);
       }
     }
+  }
+
+  // Dump function-to-profile mapping information for debugging.
+  if (SampleProfileDumpFunctionMapping) {
+    errs() << "=== Sample Profile Function Mapping ===\n";
+    errs() << "Module: " << M.getModuleIdentifier() << "\n";
+    errs() << "Profile: " << Filename << "\n";
+    errs() << "Functions in module: " << M.size() << "\n";
+    errs() << "Profiles available: " << Reader->getProfiles().size() << "\n";
+    errs() << "\n--- Function Lookup Results ---\n";
+
+    unsigned FoundCount = 0;
+    unsigned NotFoundCount = 0;
+    auto Remapper = Reader->getRemapper();
+
+    for (Function &F : M) {
+      if (F.isDeclaration())
+        continue;
+
+      StringRef OrigName = F.getName();
+      StringRef CanonName = FunctionSamples::getCanonicalFnName(F);
+      FunctionSamples *Samples = Reader->getSamplesFor(F);
+
+      if (Samples) {
+        ++FoundCount;
+        errs() << "[FOUND] " << OrigName;
+        if (OrigName != CanonName)
+          errs() << " (canonical: " << CanonName << ")";
+        errs() << " -> " << Samples->getTotalSamples() << " samples\n";
+      } else {
+        ++NotFoundCount;
+        errs() << "[NOT FOUND] " << OrigName;
+        if (OrigName != CanonName)
+          errs() << " (canonical: " << CanonName << ")";
+        if (Remapper) {
+          if (auto RemappedName = Remapper->lookUpNameInProfile(CanonName)) {
+            if (*RemappedName != CanonName)
+              errs() << " (remapped: " << *RemappedName << ")";
+          }
+        }
+        errs() << "\n";
+      }
+    }
+
+    errs() << "\n--- Summary ---\n";
+    errs() << "Functions with profile data: " << FoundCount << "\n";
+    errs() << "Functions without profile data: " << NotFoundCount << "\n";
+    errs() << "==========================================\n\n";
   }
 
   // Adjust profile line numbers to match IR debug metadata offsets.

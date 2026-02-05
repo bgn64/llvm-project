@@ -1249,19 +1249,7 @@ SampleContextFrameVector ProfiledBinary::symbolize(const InstructionPointer &IP,
       SymbolizerPath);
 
   SampleContextFrameVector CallStack;
-  int NumFrames = InlineStack.getNumberOfFrames();
-
-  // Debug: Print function names returned by symbolizer
-  llvm::outs() << "[Symbolize] Address: " << format("0x%" PRIx64, IP.Address)
-               << ", NumFrames: " << NumFrames << "\n";
-  for (int32_t I = 0; I < NumFrames; I++) {
-    const auto &Frame = InlineStack.getFrame(I);
-    llvm::outs() << "  Frame[" << I << "]: " << Frame.FunctionName
-                 << " (Line: " << Frame.Line << ", StartLine: " << Frame.StartLine
-                 << ", Discriminator: " << Frame.Discriminator << ")\n";
-  }
-
-  for (int32_t I = NumFrames - 1; I >= 0; I--) {
+  for (int32_t I = InlineStack.getNumberOfFrames() - 1; I >= 0; I--) {
     const auto &CallerFrame = InlineStack.getFrame(I);
     if (CallerFrame.FunctionName.empty() ||
         (CallerFrame.FunctionName == "<invalid>"))

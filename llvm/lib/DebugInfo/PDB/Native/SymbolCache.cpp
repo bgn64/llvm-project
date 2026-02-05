@@ -37,7 +37,6 @@
 #include "llvm/DebugInfo/PDB/Native/TpiStream.h"
 #include "llvm/DebugInfo/PDB/PDBSymbol.h"
 #include "llvm/DebugInfo/PDB/PDBSymbolCompiland.h"
-#include "llvm/Support/raw_ostream.h"
 
 using namespace llvm;
 using namespace llvm::codeview;
@@ -423,14 +422,8 @@ SymbolCache::findFunctionSymbolBySectOffset(uint32_t Sect, uint32_t Offset) {
       StringRef LinkageName = getSymbolLinkageName(*I);
 
       // If we found a linkage name, replace the name in the ProcSym.
-      if (!LinkageName.empty()) {
-        llvm::outs() << "Found linkage name '" << LinkageName
-                     << "' for symbol '" << PS.Name << "'\n";
+      if (!LinkageName.empty())
         PS.Name = LinkageName;
-      } else {
-        llvm::outs() << "No linkage name found for symbol '" << PS.Name
-                     << "'\n";
-      }
 
       // Otherwise, create a new symbol.
       SymIndexId Id = createSymbol<NativeFunctionSymbol>(PS, I.offset());

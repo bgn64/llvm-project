@@ -75,15 +75,11 @@ PDBContext::getLineInfoForAddress(object::SectionedAddress Address,
   if (Func) {
     auto FuncLineNumbers = Func->getLineNumbers();
     if (FuncLineNumbers && FuncLineNumbers->getChildCount() > 0) {
-      if (auto FirstLine = FuncLineNumbers->getNext()) {
+      if (auto FirstLine = FuncLineNumbers->getNext())
         Result.StartLine = FirstLine->getLineNumber();
-        llvm::outs() << "[PDBContext] Top-level function '" << Result.FunctionName
-                     << "' StartLine=" << Result.StartLine
-                     << ", Line=" << Result.Line << "\n";
-      }
     }
   }
-  
+
   return Result;
 }
 
@@ -161,17 +157,10 @@ PDBContext::getInliningInfoForAddress(object::SectionedAddress Address,
     // this inline site, and the first one will have the declaration line.
     auto InlineeLines = Frame->getRawSymbol().findInlineeLines();
     if (InlineeLines && InlineeLines->getChildCount() > 0) {
-      if (auto FirstLine = InlineeLines->getNext()) {
+      if (auto FirstLine = InlineeLines->getNext())
         LineInfo.StartLine = FirstLine->getLineNumber();
-        llvm::outs() << "[PDBContext] Inlined function '" << LineInfo.FunctionName
-                     << "' StartLine=" << LineInfo.StartLine
-                     << ", Line=" << LineInfo.Line << "\n";
-      }
-    } else {
-      llvm::outs() << "[PDBContext] Inlined function '" << LineInfo.FunctionName
-                   << "' NO StartLine found (findInlineeLines returned empty)\n";
     }
-    
+
     InlineInfo.addFrame(LineInfo);
   }
 

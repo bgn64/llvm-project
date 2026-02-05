@@ -203,19 +203,7 @@ std::unique_ptr<PDBSymbol> DIASession::findSymbolByAddress(uint64_t Address,
       return nullptr;
   }
   auto RawSymbol = std::make_unique<DIARawSymbol>(*this, Symbol);
-  auto Result = PDBSymbol::create(*this, std::move(RawSymbol));
-
-  // Debug: Print DIA session symbol lookup
-  llvm::outs() << "[DIASession::findSymbolByAddress] Address: 0x" 
-               << llvm::format_hex_no_prefix(Address, 16)
-               << ", Type: " << static_cast<int>(Type)
-               << ", Found: " << (Result ? "Yes" : "No");
-  if (Result) {
-    llvm::outs() << ", Name: " << Result->getRawSymbol().getName();
-  }
-  llvm::outs() << "\n";
-
-  return Result;
+  return PDBSymbol::create(*this, std::move(RawSymbol));
 }
 
 std::unique_ptr<PDBSymbol> DIASession::findSymbolByRVA(uint32_t RVA,
