@@ -342,6 +342,13 @@ static cl::opt<bool> SampleProfileDumpFunctionMapping(
              "Shows which functions found profile data and what names were "
              "used for lookup."));
 
+static cl::opt<bool> SampleProfileAdjustLineNumbers(
+    "sample-profile-adjust-line-numbers", cl::Hidden, cl::init(false),
+    cl::desc("Adjust profile line numbers to be relative to function start. "
+             "Enable this when the profile was generated with absolute line "
+             "numbers (e.g., from PDB debug info) but LLVM expects them "
+             "relative to function declaration."));
+
 namespace llvm {
 extern cl::opt<bool> EnableExtTspBlockPlacement;
 }
@@ -2168,7 +2175,8 @@ bool SampleProfileLoader::doInitialization(Module &M,
   // Adjust profile line numbers to match IR debug metadata offsets.
   // This is needed when profile line numbers are absolute (e.g., from PDB)
   // but LLVM expects them relative to function start.
-  Reader->adjustProfileLineNumbers(SymbolMap);
+  if (SampleProfileAdjustLineNumbers)
+    Reader->adjustProfileLineNumbers(SymbolMap);
 
   return true;
 }
