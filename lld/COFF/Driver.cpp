@@ -2147,7 +2147,7 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   config->cetCompat = args.hasFlag(OPT_cetcompat, OPT_cetcompat_no, false);
   config->nxCompat = args.hasFlag(OPT_nxcompat, OPT_nxcompat_no, true);
   config->enablePDB = args.hasFlag(OPT_enablepdb, OPT_enablepdb_no, true);
-  config->enablePSB = args.hasFlag(OPT_enablepsb, OPT_enablepsb_no, true);
+  config->enablePSB = args.hasFlag(OPT_enablepsb, OPT_enablepsb_no, false);
   for (auto *arg : args.filtered(OPT_swaprun))
     parseSwaprun(arg->getValue());
   config->terminalServerAware =

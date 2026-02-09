@@ -197,15 +197,6 @@ static void adjustFunctionSampleLineNumbers(
   }
   const_cast<CallsiteSampleMap &>(FS.getCallsiteSamples()) =
       std::move(NewCallsiteSamples);
-
-  // Adjust VirtualCallsiteTypeCounts map
-  CallsiteTypeMap NewTypeCounts;
-  for (const auto &[Loc, TypeCounts] : FS.getCallsiteTypeCounts()) {
-    LineLocation NewLoc(Loc.LineOffset + Offset, Loc.Discriminator);
-    NewTypeCounts[NewLoc] = TypeCounts;
-  }
-  const_cast<CallsiteTypeMap &>(FS.getCallsiteTypeCounts()) =
-      std::move(NewTypeCounts);
 }
 
 /// Adjust profile line numbers to match IR debug metadata offsets.
